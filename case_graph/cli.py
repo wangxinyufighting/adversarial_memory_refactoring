@@ -61,6 +61,12 @@ def main() -> None:
             ),
         )
         graph = builder.build(case_id=case_id, chunks=chunks)
+        if entry.get("answer") is not None:
+            graph.ensure_target_answer(
+                question=entry.get("question", ""),
+                answer=entry.get("answer"),
+                source_ids=entry.get("answer_session_ids", []),
+            )
         out_path = output_dir / f"{case_id}.case_graph.json"
         out_path.write_text(
             json.dumps(

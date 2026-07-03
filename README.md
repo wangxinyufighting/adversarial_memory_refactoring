@@ -49,10 +49,12 @@ Optional environment variables:
 
 Each `*.case_graph.json` contains:
 
+- `target`: target question, answer, and answer-session provenance from LongMemEval.
 - `chunks`: compact session provenance with `chunk_id`, `timestamp`, and order. Raw `content` is omitted unless `INCLUDE_RAW_CHUNKS=1`.
 - `entities`: normalized entity nodes with descriptions and `source_ids`.
 - `relationships`: directed entity edges with descriptions, accumulated weight, and `source_ids`.
 - `extraction_cache.json`: persisted LLM extraction results keyed by session text and timestamp, used to avoid duplicate API calls across reruns.
 
 The graph keeps `USER` as a compact anchor node instead of concatenating every session-level user summary into one very long description. This keeps downstream graph routing prompts smaller while preserving provenance through `source_ids` and directed relationships.
+When target answer text is missing from the extracted entities/relationships, the builder adds a deterministic target-answer entity and a `USER -> <ANSWER>` edge so downstream question generation cannot lose the gold answer.
 # adversarial_memory_refactoring

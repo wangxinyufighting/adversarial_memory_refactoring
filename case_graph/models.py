@@ -60,6 +60,18 @@ def _append_unique_ids(existing: List[str], incoming: Iterable[str]) -> List[str
     return result
 
 
+def _answer_texts(answer: Any) -> List[str]:
+    if isinstance(answer, list):
+        values = answer
+    else:
+        values = [answer]
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
+def _contains_text(haystack: str, needle: str) -> bool:
+    return needle.casefold() in str(haystack or "").casefold()
+
+
 @dataclass(frozen=True)
 class SessionChunk:
     case_id: str
@@ -211,6 +223,7 @@ class CaseGraph:
     chunks: List[SessionChunk] = field(default_factory=list)
     entities: Dict[str, EntityNode] = field(default_factory=dict)
     relationships: Dict[Tuple[str, str], RelationshipEdge] = field(default_factory=dict)
+    target: Dict[str, Any] = field(default_factory=dict)
 
     def add_chunk(self, chunk: SessionChunk) -> None:
         if chunk.chunk_id not in {item.chunk_id for item in self.chunks}:
@@ -239,9 +252,76 @@ class CaseGraph:
                 self.relationships[key] = RelationshipEdge(source=source, target=target)
             self.relationships[key].merge(record, chunk_id)
 
+    def ensure_target_answer(
+        self,
+        question: str,
+        answer: Any,
+        source_ids: Iterable[str] = (),
+    ) -> None:
+        """Record target QA metadata and add missing answer entities deterministically."""
+        answer_texts = _answer_texts(answer)
+        answer_source_ids = list(source_ids)
+        self.target = {
+            "question": question,
+            "answer": answer,
+            "answer_source_ids": answer_source_ids,
+        }
+        for answer_text in answer_texts:
+            if self.contains_answer(answer_text):
+                continue
+            answer_name = normalize_name(answer_text)
+            if not answer_name:
+                continue
+            self.apply_extraction(
+                chunk_id=answer_source_ids[0] if answer_source_ids else "target_answer",
+                extraction=ExtractionResult(
+                    entities=[
+                        EntityRecord(
+                            name=answer_text,
+                            entity_type="Other",
+                            description=f'Target answer for question: "{question}"',
+                        ),
+                    ],
+                    relationships=[
+                        RelationshipRecord(
+                            source="User",
+                            target=answer_text,
+                            description="target_answer",
+                            weight=10.0,
+                        )
+                    ],
+                ),
+            )
+            if answer_source_ids:
+                self.entities[answer_name].source_ids = _append_unique_ids(
+                    [],
+                    answer_source_ids,
+                )
+                self.relationships[("USER", answer_name)].source_ids = _append_unique_ids(
+                    [],
+                    answer_source_ids,
+                )
+
+    def contains_answer(self, answer: str) -> bool:
+        answer = str(answer or "").strip()
+        if not answer:
+            return True
+        for entity in self.entities.values():
+            if _contains_text(entity.name, answer) or _contains_text(entity.description, answer):
+                return True
+        for relationship in self.relationships.values():
+            if (
+                _contains_text(relationship.source, answer)
+                or _contains_text(relationship.target, answer)
+                or _contains_text(relationship.description, answer)
+            ):
+                return True
+        return False
+
     def to_dict(self, include_chunk_content: bool = False) -> Dict[str, Any]:
         return {
             "case_id": self.case_id,
+            "target": self.target,
             "chunks": [
                 chunk.to_dict(include_content=include_chunk_content)
                 for chunk in sorted(self.chunks, key=lambda c: c.order)
