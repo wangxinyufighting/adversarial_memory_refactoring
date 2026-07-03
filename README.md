@@ -56,5 +56,40 @@ Each `*.case_graph.json` contains:
 - `extraction_cache.json`: persisted LLM extraction results keyed by session text and timestamp, used to avoid duplicate API calls across reruns.
 
 The graph keeps `USER` as a compact anchor node instead of concatenating every session-level user summary into one very long description. This keeps downstream graph routing prompts smaller while preserving provenance through `source_ids` and directed relationships.
-When target answer text is missing from the extracted entities/relationships, the builder adds a deterministic target-answer entity and a `USER -> <ANSWER>` edge so downstream question generation cannot lose the gold answer.
+When target answer text is missing from the extracted entities/relationships, the builder adds a deterministic evaluator-safeguard entity for offline coverage checks. Routing policies filter this evaluator-injected edge and never use the private `target` fields for route selection.
+
+## Generate Routes Only
+
+Use this when you only want to inspect the attack paths before they are sent to the attacker. The output contains public route evidence only: no target metadata, no private scoring features, and no attacker-generated question. A route may incidentally contain the gold answer if that fact was naturally extracted into the graph, but routing does not read the private `target` fields. By default, this does not call the attacker and does not call the LLM reranker; `feature_scored_llm_rerank` falls back to feature-score selection.
+
+```bash
+./scripts/generate_routes.sh \
+  outputs/case_graphs_deepseek_test \
+  outputs/routes_deepseek_test.json
+```
+
+Set `USE_LLM_RERANK=1` if you want the feature-scored candidates reranked by the configured frozen LLM.
+
+## Generate Attacks
+
+Attack generation uses a frozen LLM. The graph routing policy first chooses an attack path, then the attacker receives only public route evidence and generates a tricky question `Q` plus supporting gold facts `F`. The original target question and answer metadata remain private evaluation fields and are not sent to the attacker.
+
+```bash
+export CASE_GRAPH_PROVIDER="deepseek"
+export DEEPSEEK_API_KEY="..."
+export DEEPSEEK_MODEL="deepseek-v4-flash"
+export DEEPSEEK_THINKING="disabled"
+
+./scripts/generate_attacks.sh \
+  outputs/case_graphs_deepseek_test \
+  outputs/attacks_deepseek_test.json
+```
+
+Routing policies are target-agnostic:
+
+- `random_walk`: seeded random walk from `USER` when available.
+- `heuristic`: highest-weight user-centered evidence edge, falling back to the highest-weight graph edge.
+- `feature_scored_llm_rerank`: deterministic graph-evidence candidates, target-agnostic feature scoring, then optional frozen LLM reranking over public route evidence.
+
+Use `POLICIES=random_walk,heuristic` to run a subset.
 # adversarial_memory_refactoring

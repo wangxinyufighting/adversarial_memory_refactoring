@@ -4,6 +4,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 GRAPH_FIELD_SEP = "<SEP>"
 COMPACT_USER_DESCRIPTION = "The user in this case."
+EVALUATOR_METADATA_SOURCE = "evaluator_target_safeguard"
 CANONICAL_ENTITY_TYPES = {
     "behavior": "Behavior",
     "duration": "Duration",
@@ -172,6 +173,7 @@ class EntityNode:
     entity_type: str
     description: str = ""
     source_ids: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def merge(self, record: EntityRecord, chunk_id: str) -> None:
         if self.name == "USER":
@@ -191,6 +193,7 @@ class EntityNode:
             "entity_type": self.entity_type,
             "description": self.description,
             "source_ids": self.source_ids,
+            "metadata": self.metadata,
         }
 
 
@@ -201,6 +204,7 @@ class RelationshipEdge:
     description: str = ""
     weight: float = 0.0
     source_ids: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def merge(self, record: RelationshipRecord, chunk_id: str) -> None:
         self.description = _append_unique_text(self.description, record.description)
@@ -214,6 +218,7 @@ class RelationshipEdge:
             "description": self.description,
             "weight": self.weight,
             "source_ids": self.source_ids,
+            "metadata": self.metadata,
         }
 
 
@@ -279,14 +284,14 @@ class CaseGraph:
                         EntityRecord(
                             name=answer_text,
                             entity_type="Other",
-                            description=f'Target answer for question: "{question}"',
+                            description="Memory fact recovered from evaluator metadata.",
                         ),
                     ],
                     relationships=[
                         RelationshipRecord(
                             source="User",
                             target=answer_text,
-                            description="target_answer",
+                            description="related_to",
                             weight=10.0,
                         )
                     ],
@@ -301,6 +306,8 @@ class CaseGraph:
                     [],
                     answer_source_ids,
                 )
+            self.entities[answer_name].metadata["source"] = EVALUATOR_METADATA_SOURCE
+            self.relationships[("USER", answer_name)].metadata["source"] = EVALUATOR_METADATA_SOURCE
 
     def contains_answer(self, answer: str) -> bool:
         answer = str(answer or "").strip()
