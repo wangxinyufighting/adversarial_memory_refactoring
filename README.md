@@ -51,6 +51,8 @@ Each `*.case_graph.json` contains:
 
 - `chunks`: compact session provenance with `chunk_id`, `timestamp`, and order. Raw `content` is omitted unless `INCLUDE_RAW_CHUNKS=1`.
 - `entities`: normalized entity nodes with descriptions and `source_ids`.
-- `relationships`: undirected entity edges with descriptions, accumulated weight, and `source_ids`.
+- `relationships`: directed entity edges with descriptions, accumulated weight, and `source_ids`.
 - `extraction_cache.json`: persisted LLM extraction results keyed by session text and timestamp, used to avoid duplicate API calls across reruns.
+
+The graph keeps `USER` as a compact anchor node instead of concatenating every session-level user summary into one very long description. This keeps downstream graph routing prompts smaller while preserving provenance through `source_ids` and directed relationships.
 # adversarial_memory_refactoring

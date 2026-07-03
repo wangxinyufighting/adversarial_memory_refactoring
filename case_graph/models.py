@@ -3,11 +3,39 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 
 GRAPH_FIELD_SEP = "<SEP>"
+COMPACT_USER_DESCRIPTION = "The user in this case."
+CANONICAL_ENTITY_TYPES = {
+    "behavior": "Behavior",
+    "duration": "Duration",
+    "event": "Event",
+    "goal": "Goal/Intention",
+    "goal/intention": "Goal/Intention",
+    "health": "Health",
+    "intention": "Goal/Intention",
+    "interest": "Interest/Skill",
+    "interest/skill": "Interest/Skill",
+    "object": "Object",
+    "organization": "Organization",
+    "other": "Other",
+    "person": "Person",
+    "place": "Place",
+    "resource": "Resource",
+    "sentiment": "Sentiment",
+    "skill": "Interest/Skill",
+    "statistic": "Statistic",
+    "time": "Time",
+    "user": "User",
+}
 
 
 def normalize_name(value: str) -> str:
     """Normalize entity names the same simple way GraphRAG-style systems do."""
     return " ".join(str(value).strip().strip('"').split()).upper()
+
+
+def normalize_entity_type(value: str) -> str:
+    raw = " ".join(str(value or "Other").strip().strip('"').split())
+    return CANONICAL_ENTITY_TYPES.get(raw.lower(), raw or "Other")
 
 
 def _append_unique_text(existing: str, incoming: str) -> str:
@@ -63,7 +91,7 @@ class EntityRecord:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "type": self.entity_type,
+            "type": normalize_entity_type(self.entity_type),
             "description": self.description,
         }
 
@@ -94,7 +122,7 @@ class ExtractionResult:
         entities = [
             EntityRecord(
                 name=item.get("name") or item.get("entity_name") or "",
-                entity_type=item.get("type") or item.get("entity_type") or "Other",
+                entity_type=normalize_entity_type(item.get("type") or item.get("entity_type") or "Other"),
                 description=item.get("description") or item.get("entity_description") or "",
             )
             for item in payload.get("entities", [])
@@ -134,8 +162,14 @@ class EntityNode:
     source_ids: List[str] = field(default_factory=list)
 
     def merge(self, record: EntityRecord, chunk_id: str) -> None:
+        if self.name == "USER":
+            self.entity_type = "User"
+            self.description = COMPACT_USER_DESCRIPTION
+            self.source_ids = _append_unique_ids(self.source_ids, [chunk_id])
+            return
+        incoming_type = normalize_entity_type(record.entity_type)
         if not self.entity_type or self.entity_type.lower() == "other":
-            self.entity_type = record.entity_type
+            self.entity_type = incoming_type
         self.description = _append_unique_text(self.description, record.description)
         self.source_ids = _append_unique_ids(self.source_ids, [chunk_id])
 
@@ -187,10 +221,11 @@ class CaseGraph:
             name = normalize_name(record.name)
             if not name:
                 continue
+            entity_type = normalize_entity_type(record.entity_type)
             if name not in self.entities:
                 self.entities[name] = EntityNode(
                     name=name,
-                    entity_type=record.entity_type or "Other",
+                    entity_type=entity_type,
                 )
             self.entities[name].merge(record, chunk_id)
 
@@ -199,9 +234,9 @@ class CaseGraph:
             target = normalize_name(record.target)
             if not source or not target or source == target:
                 continue
-            key = tuple(sorted((source, target)))
+            key = (source, target)
             if key not in self.relationships:
-                self.relationships[key] = RelationshipEdge(source=key[0], target=key[1])
+                self.relationships[key] = RelationshipEdge(source=source, target=target)
             self.relationships[key].merge(record, chunk_id)
 
     def to_dict(self, include_chunk_content: bool = False) -> Dict[str, Any]:
