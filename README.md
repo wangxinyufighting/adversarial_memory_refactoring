@@ -4,7 +4,7 @@ This repo currently contains a lightweight `CaseGraph` implementation inspired b
 
 ## Build Case Graphs
 
-The graph builder treats each LongMemEval entry as a case and each session as a chunk. By default, it keeps only user turns, extracts entities and relationships with an OpenAI-compatible LLM API, and writes one compact graph JSON per case.
+The graph builder treats each LongMemEval entry as a case and each session as a chunk. By default, it keeps only user turns, extracts entities and relationships with UnifiedMem's graph extraction prompt through an OpenAI-compatible LLM API, and writes one compact graph JSON per case.
 The CLI prints a chunk-level progress bar and stores `extraction_cache.json` so repeated runs skip sessions that were already extracted.
 
 ```bash
