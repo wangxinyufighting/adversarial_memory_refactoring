@@ -25,6 +25,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=0, help="Seed for random walk routing.")
     parser.add_argument("--random-walk-steps", type=int, default=3, help="Maximum random walk steps.")
+    parser.add_argument("--random-walk-min-nodes", type=int, default=1, help="Preferred minimum random-walk nodes.")
+    parser.add_argument("--random-walk-attempts", type=int, default=8, help="Attempts used to satisfy min nodes.")
     parser.add_argument("--route-top-k", type=int, default=5, help="Top feature-scored routes considered.")
     parser.add_argument("--route-max-output-tokens", type=int, default=300)
     parser.add_argument(
@@ -51,7 +53,12 @@ def parse_policy_names(policy_text: str) -> List[str]:
 
 def build_policies(args: argparse.Namespace, client: Optional[OpenAIChatClient] = None) -> Dict[str, object]:
     return {
-        "random_walk": RandomWalkRoutingPolicy(seed=args.seed, max_steps=args.random_walk_steps),
+        "random_walk": RandomWalkRoutingPolicy(
+            seed=args.seed,
+            max_steps=args.random_walk_steps,
+            min_nodes=args.random_walk_min_nodes,
+            attempts=args.random_walk_attempts,
+        ),
         "heuristic": HeuristicRoutingPolicy(),
         "feature_scored_llm_rerank": FeatureScoredLLMRerankRoutingPolicy(
             client=client,

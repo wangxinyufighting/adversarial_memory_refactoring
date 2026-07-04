@@ -105,15 +105,27 @@ def _edge_sort_key(edge: Dict[str, Any]) -> tuple:
     return (edge["source"], edge["target"], edge.get("description", ""))
 
 
-def _route_nodes(edges: List[Dict[str, Any]]) -> List[str]:
-    if not edges:
-        return []
-    nodes = [edges[0]["source"]]
-    for edge in edges:
-        if nodes[-1] != edge["source"]:
-            nodes.append(edge["source"])
-        nodes.append(edge["target"])
-    return nodes
+def _edge_key(edge: Dict[str, Any]) -> tuple:
+    return (edge["source"], edge["target"], edge.get("description", ""))
+
+
+def _next_node(edge: Dict[str, Any], current: str) -> str:
+    return edge["target"] if edge["source"] == current else edge["source"]
+
+
+def _walk_candidates(
+    relationships: List[Dict[str, Any]],
+    current: str,
+    visited_edges: set,
+    visited_nodes: set,
+) -> List[Dict[str, Any]]:
+    def is_fresh(edge: Dict[str, Any]) -> bool:
+        return _edge_key(edge) not in visited_edges and _next_node(edge, current) not in visited_nodes
+
+    outgoing = [edge for edge in _out_edges(relationships, current) if is_fresh(edge)]
+    if outgoing:
+        return sorted(outgoing, key=_edge_sort_key)
+    return sorted([edge for edge in _incident_edges(relationships, current) if is_fresh(edge)], key=_edge_sort_key)
 
 
 def _start_node(relationships: List[Dict[str, Any]]) -> str:
@@ -152,24 +164,40 @@ def _score_route(graph: Dict[str, Any], route: GraphRoute) -> GraphRoute:
 class RandomWalkRoutingPolicy:
     name = "random_walk"
 
-    def __init__(self, seed: int = 0, max_steps: int = 3):
+    def __init__(self, seed: int = 0, max_steps: int = 3, min_nodes: int = 1, attempts: int = 8):
         self.seed = seed
         self.max_steps = max_steps
+        self.min_nodes = min_nodes
+        self.attempts = attempts
 
     def select_route(self, graph: Dict[str, Any]) -> GraphRoute:
-        rng = random.Random(self.seed)
         relationships = _route_relationships(graph)
+        best = self._walk(relationships, random.Random(self.seed))
+        for attempt in range(1, self.attempts):
+            if len(best.nodes) >= self.min_nodes:
+                break
+            route = self._walk(relationships, random.Random(self.seed + attempt))
+            if len(route.nodes) > len(best.nodes):
+                best = route
+        return _score_route(graph, best)
+
+    def _walk(self, relationships: List[Dict[str, Any]], rng: random.Random) -> GraphRoute:
         current = _start_node(relationships)
+        nodes = [current]
         edges = []
+        visited_edges = set()
+        visited_nodes = {current}
         for _ in range(self.max_steps):
-            candidates = sorted(_out_edges(relationships, current) or _incident_edges(relationships, current), key=_edge_sort_key)
+            candidates = _walk_candidates(relationships, current, visited_edges, visited_nodes)
             if not candidates:
                 break
             edge = rng.choice(candidates)
+            current = _next_node(edge, current)
             edges.append(edge)
-            current = edge["target"] if edge["source"] == current else edge["source"]
-        route = GraphRoute(policy=self.name, nodes=_route_nodes(edges) or [current], relationships=edges)
-        return _score_route(graph, route)
+            nodes.append(current)
+            visited_edges.add(_edge_key(edge))
+            visited_nodes.add(current)
+        return GraphRoute(policy=self.name, nodes=nodes, relationships=edges)
 
 
 class HeuristicRoutingPolicy:

@@ -6,6 +6,7 @@ set -euo pipefail
 # Usage:
 #   OPENAI_API_KEY=... OPENAI_MODEL=gpt-4o-mini ./scripts/build_case_graphs.sh
 #   CASE_GRAPH_PROVIDER=deepseek DEEPSEEK_API_KEY=... ./scripts/build_case_graphs.sh
+#   CASE_GRAPH_PROVIDER=local LOCAL_API_BASE_URL=http://localhost:8000/v1 LOCAL_MODEL=qwen ./scripts/build_case_graphs.sh
 #   LIMIT=3 ./scripts/build_case_graphs.sh data/longmemeval/longmemeval_s_cleaned.json outputs/case_graphs
 #
 # Optional env vars:
@@ -15,7 +16,10 @@ set -euo pipefail
 #   DEEPSEEK_BASE_URL     DeepSeek-compatible API base URL. Defaults to https://api.deepseek.com
 #   DEEPSEEK_MODEL        DeepSeek model name. Defaults to deepseek-v4-flash.
 #   DEEPSEEK_THINKING     DeepSeek thinking mode. Defaults to disabled.
-#   CASE_GRAPH_PROVIDER   Set to deepseek to force DeepSeek env resolution.
+#   LOCAL_API_BASE_URL    Local OpenAI-compatible API base URL.
+#   LOCAL_MODEL           Local model name. Used if CASE_GRAPH_MODEL is not set.
+#   LOCAL_API_KEY         Optional local API key. Defaults to dummy-key.
+#   CASE_GRAPH_PROVIDER   Set to openai, deepseek, or local.
 #   CASE_GRAPH_MODEL      Model name specifically for graph extraction.
 #   CASE_GRAPH_TIMEOUT    HTTP timeout in seconds. Defaults to 120.
 #   CASE_GRAPH_MAX_INPUT_CHARS     Max session text chars sent to the LLM. Defaults to 12000.

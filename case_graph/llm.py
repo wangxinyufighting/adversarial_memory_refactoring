@@ -90,7 +90,20 @@ class OpenAIChatClient:
         provider = os.environ.get("CASE_GRAPH_PROVIDER", "").strip().lower()
         deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
         openai_key = os.environ.get("OPENAI_API_KEY")
+        local_base_url = os.environ.get("LOCAL_API_BASE_URL") or os.environ.get("LOCAL_BASE_URL")
+        use_local = provider in {"local", "local_openai"} or bool(local_base_url)
         use_deepseek = provider == "deepseek" or (deepseek_key and not openai_key)
+
+        if use_local:
+            return cls(
+                model=os.environ.get("CASE_GRAPH_MODEL")
+                or os.environ.get("LOCAL_MODEL")
+                or os.environ.get("OPENAI_MODEL")
+                or "local-model",
+                api_key=os.environ.get("LOCAL_API_KEY") or openai_key or "dummy-key",
+                base_url=(local_base_url or "http://localhost:8000/v1").rstrip("/"),
+                timeout=int(os.environ.get("CASE_GRAPH_TIMEOUT", "120")),
+            )
 
         if use_deepseek:
             api_key = deepseek_key
@@ -108,7 +121,9 @@ class OpenAIChatClient:
 
         api_key = openai_key
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY or DEEPSEEK_API_KEY is required for LLM extraction.")
+            raise RuntimeError(
+                "OPENAI_API_KEY, DEEPSEEK_API_KEY, or CASE_GRAPH_PROVIDER=local with LOCAL_API_BASE_URL is required."
+            )
         return cls(
             model=os.environ.get("CASE_GRAPH_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini",
             api_key=api_key,

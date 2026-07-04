@@ -10,6 +10,8 @@ set -euo pipefail
 #   POLICIES                 Comma-separated routing policies.
 #   RANDOM_SEED              Seed for random walk routing. Defaults to 0.
 #   RANDOM_WALK_STEPS        Maximum random walk steps. Defaults to 3.
+#   RANDOM_WALK_MIN_NODES    Preferred minimum random-walk nodes.
+#   RANDOM_WALK_ATTEMPTS     Attempts used to satisfy min nodes.
 #   ROUTE_TOP_K              Top feature-scored routes sent to reranker. Defaults to 5.
 #   ROUTE_MAX_OUTPUT_TOKENS  Max output tokens for route reranking. Defaults to 300.
 #   ATTACK_MAX_OUTPUT_TOKENS Max output tokens for attacker generation. Defaults to 700.
@@ -29,6 +31,14 @@ fi
 
 if [[ -n "${RANDOM_WALK_STEPS:-}" ]]; then
   ARGS+=(--random-walk-steps "$RANDOM_WALK_STEPS")
+fi
+
+if [[ -n "${RANDOM_WALK_MIN_NODES:-}" ]]; then
+  ARGS+=(--random-walk-min-nodes "$RANDOM_WALK_MIN_NODES")
+fi
+
+if [[ -n "${RANDOM_WALK_ATTEMPTS:-}" ]]; then
+  ARGS+=(--random-walk-attempts "$RANDOM_WALK_ATTEMPTS")
 fi
 
 if [[ -n "${ROUTE_TOP_K:-}" ]]; then

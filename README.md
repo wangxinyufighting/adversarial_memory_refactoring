@@ -29,15 +29,31 @@ LIMIT=1 ./scripts/build_case_graphs.sh \
   outputs/case_graphs_deepseek
 ```
 
+Local OpenAI-compatible mode:
+
+```bash
+export CASE_GRAPH_PROVIDER="local"
+export LOCAL_API_BASE_URL="http://localhost:8000/v1"
+export LOCAL_MODEL="qwen-local"
+
+LIMIT=1 ./scripts/build_case_graphs.sh \
+  data/longmemeval/longmemeval_s_cleaned.json \
+  outputs/case_graphs_local
+```
+
 Optional environment variables:
 
 - `OPENAI_BASE_URL`: OpenAI-compatible API base URL.
+- `OPENAI_API_KEY`: hosted OpenAI-compatible API key.
 - `DEEPSEEK_API_KEY`: DeepSeek API key. Used when `CASE_GRAPH_PROVIDER=deepseek`, or when no `OPENAI_API_KEY` is set.
 - `DEEPSEEK_BASE_URL`: DeepSeek-compatible API base URL. Defaults to `https://api.deepseek.com`.
 - `DEEPSEEK_MODEL`: DeepSeek model name. Defaults to `deepseek-v4-flash`.
 - `DEEPSEEK_THINKING`: DeepSeek thinking mode. Defaults to `disabled` to avoid reasoning-token cost.
+- `LOCAL_API_BASE_URL`: local OpenAI-compatible API base URL, such as `http://localhost:8000/v1`.
+- `LOCAL_MODEL`: local model name. Used if `CASE_GRAPH_MODEL` is not set.
+- `LOCAL_API_KEY`: optional local API key. Defaults to `dummy-key` when omitted.
 - `CASE_GRAPH_MODEL`: extraction model override.
-- `CASE_GRAPH_PROVIDER=deepseek`: force DeepSeek environment variable resolution.
+- `CASE_GRAPH_PROVIDER`: set to `openai`, `deepseek`, or `local`.
 - `CASE_GRAPH_TIMEOUT`: HTTP timeout in seconds.
 - `CASE_GRAPH_MAX_INPUT_CHARS`: maximum session text characters sent to the LLM. Defaults to `12000`.
 - `CASE_GRAPH_MAX_OUTPUT_TOKENS`: `max_tokens` for each extraction response. Defaults to `1200`.
@@ -68,11 +84,63 @@ Use this when you only want to inspect the attack paths before they are sent to 
   outputs/routes_deepseek_test.json
 ```
 
+Select a single routing policy:
+
+```bash
+./scripts/generate_routes.sh \
+  outputs/case_graphs_deepseek_test \
+  outputs/routes_heuristic_test.json \
+  heuristic
+```
+
+Prefer at least four nodes for `random_walk` when the graph can support it:
+
+```bash
+RANDOM_WALK_MIN_NODES=4 RANDOM_WALK_ATTEMPTS=16 ./scripts/generate_routes.sh \
+  outputs/case_graphs_deepseek_test \
+  outputs/routes_random_test.json \
+  random_walk
+```
+
 Set `USE_LLM_RERANK=1` if you want the feature-scored candidates reranked by the configured frozen LLM.
 
 ## Generate Attacks
 
 Attack generation uses a frozen LLM. The graph routing policy first chooses an attack path, then the attacker receives only public route evidence and generates a tricky question `Q` plus supporting gold facts `F`. The original target question and answer metadata remain private evaluation fields and are not sent to the attacker.
+
+Recommended two-stage workflow:
+
+```bash
+./scripts/generate_routes.sh \
+  outputs/case_graphs_deepseek_test \
+  outputs/routes_random_min4_test.json \
+  random_walk
+
+export CASE_GRAPH_PROVIDER="deepseek"
+export DEEPSEEK_API_KEY="..."
+export DEEPSEEK_MODEL="deepseek-v4-flash"
+export DEEPSEEK_THINKING="disabled"
+
+./scripts/generate_attacks_from_routes.sh \
+  outputs/routes_random_min4_test.json \
+  outputs/attacks_random_min4_test.json
+```
+
+Using a local OpenAI-compatible model:
+
+```bash
+export CASE_GRAPH_PROVIDER="local"
+export LOCAL_API_BASE_URL="http://localhost:8000/v1"
+export LOCAL_MODEL="qwen-local"
+
+./scripts/generate_attacks_from_routes.sh \
+  outputs/routes_random_min4_test.json \
+  outputs/attacks_random_min4_local.json
+```
+
+The attack output contains `question`, `golden_facts`, and the public `route` used to generate them.
+
+You can also run routing and attacking in one command from CaseGraph files:
 
 ```bash
 export CASE_GRAPH_PROVIDER="deepseek"
