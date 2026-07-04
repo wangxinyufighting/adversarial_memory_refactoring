@@ -27,7 +27,7 @@ set -euo pipefail
 #   EXTRACTION_CACHE_PATH          Persistent extraction cache path. Defaults to OUTPUT_DIR/extraction_cache.json.
 #   LIMIT                 Number of cases to process.
 #   INCLUDE_ASSISTANT=1   Include assistant turns in chunks. Default keeps user turns only.
-#   INCLUDE_RAW_CHUNKS=1  Write raw session text into graph JSON. Default omits it.
+#   OMIT_RAW_CHUNKS=1     Omit raw session text from graph JSON. Default keeps it for verification.
 
 INPUT_PATH="${1:-data/longmemeval/longmemeval_s_cleaned.json}"
 OUTPUT_DIR="${2:-outputs/case_graphs}"
@@ -46,8 +46,8 @@ if [[ -n "${EXTRACTION_CACHE_PATH:-}" ]]; then
   ARGS+=(--cache-path "$EXTRACTION_CACHE_PATH")
 fi
 
-if [[ "${INCLUDE_RAW_CHUNKS:-0}" == "1" ]]; then
-  ARGS+=(--include-raw-chunks)
+if [[ "${OMIT_RAW_CHUNKS:-0}" == "1" ]]; then
+  ARGS+=(--omit-raw-chunks)
 fi
 
 python3 -m case_graph.cli "${ARGS[@]}"

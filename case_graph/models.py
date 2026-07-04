@@ -325,7 +325,7 @@ class CaseGraph:
                 return True
         return False
 
-    def to_dict(self, include_chunk_content: bool = False) -> Dict[str, Any]:
+    def to_dict(self, include_chunk_content: bool = True) -> Dict[str, Any]:
         return {
             "case_id": self.case_id,
             "target": self.target,

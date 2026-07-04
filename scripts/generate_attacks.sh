@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Generate adversarial questions from CaseGraph JSON files.
+# Generate adversarial Q/A pairs from CaseGraph JSON files.
 #
 # Usage:
 #   CASE_GRAPH_PROVIDER=deepseek DEEPSEEK_API_KEY=... ./scripts/generate_attacks.sh outputs/case_graphs outputs/attacks.json
@@ -15,6 +15,9 @@ set -euo pipefail
 #   ROUTE_TOP_K              Top feature-scored routes sent to reranker. Defaults to 5.
 #   ROUTE_MAX_OUTPUT_TOKENS  Max output tokens for route reranking. Defaults to 300.
 #   ATTACK_MAX_OUTPUT_TOKENS Max output tokens for attacker generation. Defaults to 700.
+#   VERIFY_MAX_OUTPUT_TOKENS Max output tokens for answer verification. Defaults to 300.
+#   SKIP_ATTACK_VERIFICATION Set to 1 to skip answer verification.
+#   KEEP_FAILED_VERIFICATION Set to 1 to keep unsupported or ambiguous attacks.
 
 INPUT_PATH="${1:-outputs/case_graphs}"
 OUTPUT_PATH="${2:-outputs/attacks.json}"
@@ -51,6 +54,18 @@ fi
 
 if [[ -n "${ATTACK_MAX_OUTPUT_TOKENS:-}" ]]; then
   ARGS+=(--attack-max-output-tokens "$ATTACK_MAX_OUTPUT_TOKENS")
+fi
+
+if [[ -n "${VERIFY_MAX_OUTPUT_TOKENS:-}" ]]; then
+  ARGS+=(--verify-max-output-tokens "$VERIFY_MAX_OUTPUT_TOKENS")
+fi
+
+if [[ "${SKIP_ATTACK_VERIFICATION:-0}" == "1" ]]; then
+  ARGS+=(--skip-verification)
+fi
+
+if [[ "${KEEP_FAILED_VERIFICATION:-0}" == "1" ]]; then
+  ARGS+=(--keep-failed-verification)
 fi
 
 python3 -m case_graph.attack_cli "${ARGS[@]}"

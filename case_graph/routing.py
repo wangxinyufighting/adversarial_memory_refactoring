@@ -34,6 +34,32 @@ class GraphRoute:
         }
 
 
+def public_route_evidence(graph: Dict[str, Any], route: GraphRoute) -> Dict[str, Any]:
+    """Build the public route evidence sent to the attacker."""
+    evidence = route.to_evidence_dict()
+    entities = _public_entities(graph, route.nodes)
+    if entities:
+        evidence["entities"] = entities
+    return evidence
+
+
+def _public_entities(graph: Dict[str, Any], route_nodes: List[str]) -> List[Dict[str, Any]]:
+    entities = _entity_map(graph)
+    result = []
+    for name in route_nodes:
+        entity = entities.get(name)
+        if not entity or _is_evaluator_injected_entity(entity):
+            continue
+        result.append(
+            {
+                "name": entity.get("name", name),
+                "entity_type": entity.get("entity_type", entity.get("type", "")),
+                "description": entity.get("description", ""),
+            }
+        )
+    return result
+
+
 def _public_relationship(edge: Dict[str, Any]) -> Dict[str, Any]:
     description = edge.get("description", "")
     if description == "target_answer":

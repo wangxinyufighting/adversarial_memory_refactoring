@@ -3,11 +3,13 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .evidence import route_golden_facts
 from .llm import OpenAIChatClient
 from .routing import (
     FeatureScoredLLMRerankRoutingPolicy,
     HeuristicRoutingPolicy,
     RandomWalkRoutingPolicy,
+    public_route_evidence,
 )
 
 
@@ -80,7 +82,8 @@ def generate_routes(
             routes.append(
                 {
                     "case_id": graph.get("case_id"),
-                    "route": route.to_evidence_dict(),
+                    "route": public_route_evidence(graph, route),
+                    "golden_facts": route_golden_facts(graph, route),
                 }
             )
     return routes

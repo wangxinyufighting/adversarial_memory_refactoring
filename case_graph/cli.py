@@ -22,7 +22,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--include-raw-chunks",
         action="store_true",
-        help="Write raw session text into graph JSON for debugging. Disabled by default to keep outputs compact.",
+        help="Write raw session text into graph JSON. Enabled by default for verification evidence.",
+    )
+    parser.add_argument(
+        "--omit-raw-chunks",
+        action="store_true",
+        help="Omit raw session text from graph JSON.",
     )
     parser.add_argument(
         "--include-assistant",
@@ -68,9 +73,10 @@ def main() -> None:
                 source_ids=entry.get("answer_session_ids", []),
             )
         out_path = output_dir / f"{case_id}.case_graph.json"
+        include_chunk_content = args.include_raw_chunks or not args.omit_raw_chunks
         out_path.write_text(
             json.dumps(
-                graph.to_dict(include_chunk_content=args.include_raw_chunks),
+                graph.to_dict(include_chunk_content=include_chunk_content),
                 ensure_ascii=False,
                 indent=2,
             ),
