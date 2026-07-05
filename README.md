@@ -156,6 +156,24 @@ export DEEPSEEK_THINKING="disabled"
   outputs/attacks_deepseek_test.json
 ```
 
+## Baseline Sanity Test
+
+Before defense testing, feed each attack's verification-only raw sessions `F` directly to an Answer Agent and ask it to answer `Q`. If the Answer Agent cannot recover the attack's `answer` from `F`, the sample is discarded because even a perfect memory context is insufficient.
+
+```bash
+CASE_GRAPH_PROVIDER=deepseek \
+DEEPSEEK_API_KEY=... \
+DEEPSEEK_MODEL=deepseek-v4-flash \
+DEEPSEEK_THINKING=disabled \
+ANSWER_MAX_OUTPUT_TOKENS=200 \
+JUDGE_MAX_OUTPUT_TOKENS=200 \
+./scripts/run_baseline_sanity_test.sh \
+  outputs/attacks_random_min4_test.json \
+  outputs/attacks_random_min4_baseline_passed.json
+```
+
+The output keeps only baseline-passable attacks by default and adds `baseline_sanity` to each retained sample. The correctness judge first uses normalized string matching and only calls the LLM judge when the match is uncertain. Set `KEEP_FAILED_BASELINE=1` to keep failed samples for inspection, or `SKIP_LLM_JUDGE=1` to avoid the extra judge call.
+
 Routing policies are target-agnostic:
 
 - `random_walk`: seeded random walk from `USER` when available.
@@ -163,4 +181,35 @@ Routing policies are target-agnostic:
 - `feature_scored_llm_rerank`: deterministic graph-evidence candidates, target-agnostic feature scoring, then optional frozen LLM reranking over public route evidence.
 
 Use `POLICIES=random_walk,heuristic` to run a subset.
+
+## Old Memory Retrieval
+
+Stage-three defense uses a frozen BM25-style retriever over the current memory library `M_t`. Each memory item is a structured chunk with `content` and `linked_questions`; retrieval never updates model parameters.
+
+```bash
+./scripts/retrieve_memories.sh \
+  data/memory_store.json \
+  "What degree did I graduate with?" \
+  outputs/retrieval.json \
+  5
+```
+
+Accepted memory JSON shapes are either `{"memories": [...]}` or `{"chunks": [...]}`. Each item may use `memory_id`, `id`, `chunk_id`, or `session_id` as its identifier.
+
+## Initial Defense Test
+
+After retrieval, the Answer Agent answers using only the retrieved old memories. If the judge marks the answer correct, the question is bound to the supporting memories' `linked_questions` and added to the success pool. Otherwise, the output is marked `needs_refactor=true` for the memory refactoring stage.
+
+```bash
+CASE_GRAPH_PROVIDER=deepseek \
+DEEPSEEK_API_KEY=... \
+./scripts/run_initial_defense.sh \
+  data/memory_store.json \
+  "Which baseball player did the user admire after watching the Astros?" \
+  "Jose Altuve" \
+  outputs/initial_defense.json \
+  outputs/memory_store_updated.json \
+  outputs/success_pool.json \
+  5
+```
 # adversarial_memory_refactoring
