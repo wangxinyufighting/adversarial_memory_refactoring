@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PYTHONPATH="${ROOT_DIR}:${ROOT_DIR}/verl:${PYTHONPATH:-}"
+export PYTHONPATH="${ROOT_DIR}/compat:${ROOT_DIR}:${ROOT_DIR}/verl:${PYTHONPATH:-}"
 
 MODEL_PATH=${MODEL_PATH:-Qwen/Qwen2.5-0.5B-Instruct}
 TRAIN_FILE=${TRAIN_FILE:-outputs/memory_grpo/train.parquet}
