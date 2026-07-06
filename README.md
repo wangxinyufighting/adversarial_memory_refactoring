@@ -212,4 +212,72 @@ DEEPSEEK_API_KEY=... \
   outputs/success_pool.json \
   5
 ```
+
+## Similarity Routing
+
+Stage-four routing first retrieves Top-K old memories, then compares the highest BM25-style similarity score with `tau`. If `max_score < tau`, the router chooses `add`; otherwise it chooses `merge` and records the hit memory ids whose scores meet the threshold. This step only selects the action and never mutates `M_t`.
+
+```bash
+python3 -m case_graph.refactoring_cli \
+  --memory data/memory_store.json \
+  --question "Which Astros player did the user admire?" \
+  --tau 1.0 \
+  --top-k 5 \
+  --output outputs/refactor_decision.json
+```
+
+## Sandbox Refactoring Test
+
+The sandbox stage applies a proposed `add` or `merge` edit on a deep copy of `M_t`, producing `M_temp`. It then answers the current question and selected regression questions from `M_temp`, and computes reward from current correctness, regression accuracy, regression failures, new chunk count, and new chunk length. The main memory is not changed here; commit/rollback is handled by the next stage.
+
+For GRPO, multiple rollouts produce multiple sandbox results. Environment settlement selects the rollout with the highest reward: commit its `M_temp` only when the best reward is positive; otherwise discard every candidate and put the question into the high-priority buffer. Before a commit replaces `M_t`, the old memory can be archived with `case_id`, `step`, `exp_name`, and a UTC timestamp for debugging memory evolution.
+
+## GRPO Training With verl
+
+The minimal verl integration keeps verl unchanged and plugs in a custom reward function from `case_graph/grpo_adapter.py`. Each training row stores one refactoring state in `reward_model.ground_truth`; the policy model only needs to output JSON chunks. During reward computation, the adapter parses those chunks, builds `M_temp`, runs local answer-presence regression checks, and returns the sandbox reward for GRPO.
+
+Prepare parquet data from a JSON list of refactoring states:
+
+```bash
+python3 -m case_graph.grpo_data_cli \
+  --states outputs/memory_grpo/train_states.json \
+  --output outputs/memory_grpo/train.parquet
+```
+
+Run minimal GRPO:
+
+```bash
+TRAIN_FILE=outputs/memory_grpo/train.parquet \
+MODEL_PATH=Qwen/Qwen2.5-0.5B-Instruct \
+bash scripts/run_memory_grpo_verl.sh
+```
+
+## Full Online Algorithm
+
+Use the pipeline runner to connect attack generation, oracle checking, retrieval, initial answering, action routing, sandbox refactoring, reward calculation, GRPO-style rollout settlement, commit/rollback, success-pool updates, and debug memory archiving.
+
+```bash
+CASE_GRAPH_PROVIDER=deepseek \
+DEEPSEEK_API_KEY=... \
+./scripts/run_memory_algorithm.sh \
+  --memory data/memory_store.json \
+  --graphs outputs/case_graphs_deepseek_test \
+  --max-graphs 5 \
+  --routes-per-graph 2 \
+  --memory-output outputs/final_memory.json \
+  --trace-output outputs/memory_algorithm_trace.json \
+  --attack-trace-output outputs/attack_oracle_trace.json \
+  --success-pool-output outputs/success_pool.json \
+  --high-priority-buffer-output outputs/high_priority_buffer.json \
+  --memory-archive-dir outputs/memory_archive \
+  --exp-name debug_run \
+  --tau 1.0 \
+  --policies random_walk \
+  --top-k 5 \
+  --proposal-count 4
+```
+
+With `--graphs`, the runner first creates graph routes, generates attacks, verifies each attack against `golden_facts`, and runs the oracle check by answering from `golden_facts` directly. Only oracle-passable attacks enter the defense loop. You can still pass a prebuilt attack file with `--attacks`; each attack must provide `question`, `answer`, and optional `golden_facts`. If an attack file lacks `answer`, add `--derive-missing-answer` to ask the Golden Fact Answer Agent to fill it from `golden_facts`.
+
+Sampling counts are explicit: `--max-graphs` controls how many case graphs are used, `--routes-per-graph` controls how many routes/questions are sampled per graph and policy, and `--proposal-count` controls how many refactoring proposals are evaluated per question in the online sandbox. In verl GRPO training, the equivalent rollout count is `ROLLOUT_N` in `scripts/run_memory_grpo_verl.sh`.
 # adversarial_memory_refactoring
