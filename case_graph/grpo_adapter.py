@@ -3,16 +3,28 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .refactoring import (
-    ADD_ACTION,
-    MERGE_ACTION,
-    RefactorProposal,
-    SandboxEvaluation,
-    QuestionTestResult,
-    build_sandbox_memory,
-    compute_reward,
-)
-from .retriever import FrozenBM25Retriever, MemoryChunk, MemoryStore
+try:
+    from .refactoring import (
+        ADD_ACTION,
+        MERGE_ACTION,
+        RefactorProposal,
+        SandboxEvaluation,
+        QuestionTestResult,
+        build_sandbox_memory,
+        compute_reward,
+    )
+    from .retriever import FrozenBM25Retriever, MemoryChunk, MemoryStore
+except ImportError:
+    from case_graph.refactoring import (
+        ADD_ACTION,
+        MERGE_ACTION,
+        RefactorProposal,
+        SandboxEvaluation,
+        QuestionTestResult,
+        build_sandbox_memory,
+        compute_reward,
+    )
+    from case_graph.retriever import FrozenBM25Retriever, MemoryChunk, MemoryStore
 
 
 SYSTEM_PROMPT = (
