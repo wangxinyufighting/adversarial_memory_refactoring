@@ -10,6 +10,8 @@ VAL_FILE=${VAL_FILE:-${TRAIN_FILE}}
 
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-8}
 PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-4}
+PPO_MICRO_BATCH_SIZE_PER_GPU=${PPO_MICRO_BATCH_SIZE_PER_GPU:-1}
+LOG_PROB_MICRO_BATCH_SIZE_PER_GPU=${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU:-1}
 ROLLOUT_N=${ROLLOUT_N:-4}
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-4096}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-512}
@@ -26,9 +28,12 @@ python3 -m verl.trainer.main_ppo \
   data.truncation=error \
   actor_rollout_ref.model.path="${MODEL_PATH}" \
   actor_rollout_ref.actor.ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE}" \
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE_PER_GPU}" \
   actor_rollout_ref.actor.optim.lr="${ACTOR_LR:-1e-6}" \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu="${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU}" \
   actor_rollout_ref.rollout.n="${ROLLOUT_N}" \
   actor_rollout_ref.rollout.temperature="${ROLLOUT_TEMPERATURE:-1.0}" \
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu="${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU}" \
   reward.custom_reward_function.path="${ROOT_DIR}/case_graph/grpo_adapter.py" \
   reward.custom_reward_function.name=compute_score \
   reward.reward_manager.name=naive \
