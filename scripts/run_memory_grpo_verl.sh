@@ -7,12 +7,15 @@ export PYTHONPATH="${ROOT_DIR}:${ROOT_DIR}/verl:${PYTHONPATH:-}"
 MODEL_PATH=${MODEL_PATH:-Qwen/Qwen2.5-0.5B-Instruct}
 TRAIN_FILE=${TRAIN_FILE:-outputs/memory_grpo/train.parquet}
 VAL_FILE=${VAL_FILE:-${TRAIN_FILE}}
+INFER_BACKEND=${INFER_BACKEND:-vllm}
 
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-2}
 PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-1}
 PPO_MICRO_BATCH_SIZE_PER_GPU=${PPO_MICRO_BATCH_SIZE_PER_GPU:-1}
 LOG_PROB_MICRO_BATCH_SIZE_PER_GPU=${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU:-1}
 ROLLOUT_N=${ROLLOUT_N:-4}
+ROLLOUT_TP=${ROLLOUT_TP:-1}
+ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.5}
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-16384}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-512}
 FILTER_OVERLONG_PROMPTS=${FILTER_OVERLONG_PROMPTS:-True}
@@ -33,6 +36,9 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE}" \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE_PER_GPU}" \
   actor_rollout_ref.actor.optim.lr="${ACTOR_LR:-1e-6}" \
+  actor_rollout_ref.rollout.name="${INFER_BACKEND}" \
+  actor_rollout_ref.rollout.tensor_model_parallel_size="${ROLLOUT_TP}" \
+  actor_rollout_ref.rollout.gpu_memory_utilization="${ROLLOUT_GPU_MEMORY_UTILIZATION}" \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu="${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU}" \
   actor_rollout_ref.rollout.n="${ROLLOUT_N}" \
   actor_rollout_ref.rollout.temperature="${ROLLOUT_TEMPERATURE:-1.0}" \
