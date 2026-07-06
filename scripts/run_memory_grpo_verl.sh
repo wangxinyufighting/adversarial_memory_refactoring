@@ -8,13 +8,15 @@ MODEL_PATH=${MODEL_PATH:-Qwen/Qwen2.5-0.5B-Instruct}
 TRAIN_FILE=${TRAIN_FILE:-outputs/memory_grpo/train.parquet}
 VAL_FILE=${VAL_FILE:-${TRAIN_FILE}}
 
-TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-8}
-PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-4}
+TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-2}
+PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-1}
 PPO_MICRO_BATCH_SIZE_PER_GPU=${PPO_MICRO_BATCH_SIZE_PER_GPU:-1}
 LOG_PROB_MICRO_BATCH_SIZE_PER_GPU=${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU:-1}
 ROLLOUT_N=${ROLLOUT_N:-4}
-MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-4096}
+MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-16384}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-512}
+FILTER_OVERLONG_PROMPTS=${FILTER_OVERLONG_PROMPTS:-True}
+DATA_TRUNCATION=${DATA_TRUNCATION:-error}
 TRAINER_USE_V1=${TRAINER_USE_V1:-False}
 
 python3 -m verl.trainer.main_ppo \
@@ -25,8 +27,8 @@ python3 -m verl.trainer.main_ppo \
   data.train_batch_size="${TRAIN_BATCH_SIZE}" \
   data.max_prompt_length="${MAX_PROMPT_LENGTH}" \
   data.max_response_length="${MAX_RESPONSE_LENGTH}" \
-  data.filter_overlong_prompts=True \
-  data.truncation=error \
+  data.filter_overlong_prompts="${FILTER_OVERLONG_PROMPTS}" \
+  data.truncation="${DATA_TRUNCATION}" \
   actor_rollout_ref.model.path="${MODEL_PATH}" \
   actor_rollout_ref.actor.ppo_mini_batch_size="${PPO_MINI_BATCH_SIZE}" \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="${PPO_MICRO_BATCH_SIZE_PER_GPU}" \
