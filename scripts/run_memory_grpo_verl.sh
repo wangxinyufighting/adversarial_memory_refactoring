@@ -15,6 +15,7 @@ LOG_PROB_MICRO_BATCH_SIZE_PER_GPU=${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU:-1}
 ROLLOUT_N=${ROLLOUT_N:-4}
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-4096}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-512}
+TRAINER_USE_V1=${TRAINER_USE_V1:-False}
 
 python3 -m verl.trainer.main_ppo \
   algorithm.adv_estimator=grpo \
@@ -40,6 +41,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.project_name="${PROJECT_NAME:-memory_refactor_grpo}" \
   trainer.experiment_name="${EXPERIMENT_NAME:-minimal_verl_grpo}" \
   trainer.logger="${TRAINER_LOGGER:-[\"console\"]}" \
+  trainer.use_v1="${TRAINER_USE_V1}" \
   trainer.n_gpus_per_node="${NGPUS_PER_NODE:-1}" \
   trainer.nnodes="${NNODES:-1}" \
   trainer.total_epochs="${TOTAL_EPOCHS:-1}" \
