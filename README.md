@@ -280,4 +280,16 @@ DEEPSEEK_API_KEY=... \
 With `--graphs`, the runner first creates graph routes, generates attacks, verifies each attack against `golden_facts`, and runs the oracle check by answering from `golden_facts` directly. Only oracle-passable attacks enter the defense loop. You can still pass a prebuilt attack file with `--attacks`; each attack must provide `question`, `answer`, and optional `golden_facts`. If an attack file lacks `answer`, add `--derive-missing-answer` to ask the Golden Fact Answer Agent to fill it from `golden_facts`.
 
 Sampling counts are explicit: `--max-graphs` controls how many case graphs are used, `--routes-per-graph` controls how many routes/questions are sampled per graph and policy, and `--proposal-count` controls how many refactoring proposals are evaluated per question in the online sandbox. In verl GRPO training, the equivalent rollout count is `ROLLOUT_N` in `scripts/run_memory_grpo_verl.sh`.
+
+Build offline GRPO training data directly from the trace:
+
+```bash
+./scripts/build_grpo_data_from_trace.sh \
+  --trace outputs/memory_grpo/trace.json \
+  --states-output outputs/memory_grpo/train_states.json \
+  --parquet-output outputs/memory_grpo/train.parquet \
+  --top-k 5
+```
+
+Each parquet row contains only the minimal GRPO state `S_t = (M_t, Q, F, action, regression_set)` plus the gold answer for reward calculation. Regenerate `trace.json` with the current pipeline if an older trace is missing `current_memory`.
 # adversarial_memory_refactoring

@@ -52,8 +52,11 @@ class AlgorithmStepResult:
     case_id: str
     step: int
     question: str
+    answer: str
+    golden_facts: List[Dict[str, Any]]
     status: str
     memory_store: MemoryStore
+    current_memory: MemoryStore
     initial_defense: Dict[str, Any]
     decision: Optional[RefactorActionDecision] = None
     regression_questions: List[RegressionQuestion] = field(default_factory=list)
@@ -65,7 +68,10 @@ class AlgorithmStepResult:
             "case_id": self.case_id,
             "step": self.step,
             "question": self.question,
+            "answer": self.answer,
+            "golden_facts": self.golden_facts,
             "status": self.status,
+            "current_memory": {"memories": [chunk.to_dict() for chunk in self.current_memory.chunks]},
             "initial_defense": self.initial_defense,
             "decision": self.decision.to_dict() if self.decision else None,
             "regression_questions": [item.to_dict() for item in self.regression_questions],
@@ -130,6 +136,7 @@ class MemoryRefactoringPipeline:
         question = str(attack.get("question", ""))
         answer = str(attack.get("answer") or attack.get("gold_answer") or "")
         case_id = str(attack.get("case_id", ""))
+        golden_facts = attack.get("golden_facts", [])
         if not question or not answer:
             raise ValueError("Each attack must contain question and answer.")
 
@@ -148,8 +155,11 @@ class MemoryRefactoringPipeline:
                 case_id=case_id,
                 step=step,
                 question=question,
+                answer=answer,
+                golden_facts=golden_facts,
                 status="initial_defense_success",
                 memory_store=memory_store,
+                current_memory=memory_store,
                 initial_defense=initial.to_dict(),
             )
 
@@ -189,8 +199,11 @@ class MemoryRefactoringPipeline:
             case_id=case_id,
             step=step,
             question=question,
+            answer=answer,
+            golden_facts=golden_facts,
             status="refactor_committed" if settlement.committed else "refactor_rolled_back",
             memory_store=settlement.memory_store,
+            current_memory=memory_store,
             initial_defense=initial.to_dict(),
             decision=decision,
             regression_questions=regression_questions,
