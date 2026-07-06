@@ -21,7 +21,8 @@ from .verifier import GoldenFactVerifier
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the full online memory-refactoring algorithm.")
-    parser.add_argument("--memory", required=True, help="Initial memory store M0 JSON.")
+    parser.add_argument("--memory", help="Initial memory store M0 JSON.")
+    parser.add_argument("--empty-memory", action="store_true", help="Start from an empty M0.")
     parser.add_argument("--attacks", help="Attack JSON list or {'attacks': [...]} file.")
     parser.add_argument("--graphs", help="CaseGraph JSON file or directory for stage-one attack generation.")
     parser.add_argument("--max-graphs", type=int, default=-1, help="Limit graphs used from --graphs; -1 means all.")
@@ -74,6 +75,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if not args.memory and not args.empty_memory:
+        raise ValueError("Provide --memory or set --empty-memory.")
     if not args.attacks and not args.graphs:
         raise ValueError("Provide either --attacks or --graphs.")
     client = OpenAIChatClient.from_env()
@@ -118,7 +121,7 @@ def main() -> None:
 
     result = pipeline.run_stream(
         attacks=attacks,
-        memory_store=MemoryStore.load(args.memory),
+        memory_store=MemoryStore() if args.empty_memory else MemoryStore.load(args.memory),
         success_pool=SuccessPool.load(args.success_pool) if args.success_pool else SuccessPool(),
         high_priority_buffer=(
             HighPriorityBuffer.load(args.high_priority_buffer)
