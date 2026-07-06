@@ -97,6 +97,7 @@ def compute_score(
     reward = compute_reward(proposal, evaluation)
     return {
         "score": reward.reward,
+        "format_error": 0.0,
         "current_correct": float(evaluation.current_test.correct),
         "regression_accuracy": evaluation.regression_accuracy,
         "failed_regression_count": float(evaluation.failed_regression_count),
@@ -131,8 +132,12 @@ def _proposal_from_response(state: Dict[str, Any], solution_str: str) -> Refacto
 def _bad_score() -> Dict[str, float]:
     return {
         "score": -3.0,
-        "current_correct": 0.0,
+        "current": -3.0,
         "regression_accuracy": 0.0,
+        "regression_failure": 0.0,
+        "chunk_count": 0.0,
+        "length": 0.0,
+        "current_correct": 0.0,
         "failed_regression_count": 0.0,
         "new_chunk_count": 0.0,
         "format_error": 1.0,
