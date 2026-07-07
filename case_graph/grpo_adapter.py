@@ -13,6 +13,7 @@ try:
         build_sandbox_memory,
         compute_reward,
     )
+    from .retriever import MemoryChunk, MemoryStore
     from .retriever import FrozenBM25Retriever, MemoryChunk, MemoryStore
 except ImportError:
     from case_graph.refactoring import (
@@ -66,12 +67,20 @@ def build_verl_row_online(state: Dict[str, Any], tokenizer=None, index: int = 0)
 
     Similar to build_verl_row but includes UID for GRPO grouping and episode metadata.
     """
+    # Convert memory_store to serializable format
+    memory_store = state.get("current_memory") or state.get("memory_store")
+    if isinstance(memory_store, MemoryStore):
+        memory_chunks = [chunk.to_dict() for chunk in memory_store.chunks]
+    else:
+        memory_chunks = []
+
     # Extract only JSON-serializable fields for ground_truth
     ground_truth = {
         "question": state.get("question", ""),
         "answer": state.get("answer", ""),
         "action": state.get("action", "add"),
         "selected_memory_ids": state.get("selected_memory_ids", []),
+        "current_memory": memory_chunks,  # Add memory for compute_score
         "case_id": state.get("case_id", "unknown"),
         "episode": state.get("episode", 0),
         "uid": state.get("uid", ""),
