@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${ROOT_DIR}/compat:${ROOT_DIR}:${ROOT_DIR}/verl:${PYTHONPATH:-}"
 
-MODEL_PATH=${MODEL_PATH:-Qwen/Qwen2.5-0.5B-Instruct}
+MODEL_PATH=${MODEL_PATH:-/mnt/local2/wxy/models/Qwen3-0.6B}
 TRAIN_FILE=${TRAIN_FILE:-outputs/memory_grpo/train.parquet}
 VAL_FILE=${VAL_FILE:-${TRAIN_FILE}}
 INFER_BACKEND=${INFER_BACKEND:-vllm}
@@ -15,7 +15,7 @@ PPO_MICRO_BATCH_SIZE_PER_GPU=${PPO_MICRO_BATCH_SIZE_PER_GPU:-1}
 LOG_PROB_MICRO_BATCH_SIZE_PER_GPU=${LOG_PROB_MICRO_BATCH_SIZE_PER_GPU:-1}
 ROLLOUT_N=${ROLLOUT_N:-4}
 ROLLOUT_TP=${ROLLOUT_TP:-1}
-ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.5}
+ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.6}
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-16384}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-512}
 FILTER_OVERLONG_PROMPTS=${FILTER_OVERLONG_PROMPTS:-True}
@@ -48,7 +48,7 @@ python3 -m verl.trainer.main_ppo \
   reward.reward_manager.name=naive \
   trainer.project_name="${PROJECT_NAME:-memory_refactor_grpo}" \
   trainer.experiment_name="${EXPERIMENT_NAME:-minimal_verl_grpo}" \
-  trainer.logger="${TRAINER_LOGGER:-[\"console\"]}" \
+  trainer.logger='["console","wandb"]' \
   trainer.use_v1="${TRAINER_USE_V1}" \
   trainer.n_gpus_per_node="${NGPUS_PER_NODE:-1}" \
   trainer.nnodes="${NNODES:-1}" \
