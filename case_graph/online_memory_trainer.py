@@ -116,6 +116,8 @@ class OnlineMemoryTrainer:
             "temperature": self.config.get("temperature", 1.0),
             "tensor_model_parallel_size": self.config.get("rollout_tp", 1),
             "gpu_memory_utilization": self.config.get("rollout_gpu_memory_utilization", 0.6),
+            "seed": self.config.get("seed", 42),
+            "full_determinism": False,  # Set to True for fully deterministic training
         })
 
         # Build reward config with our custom reward function
