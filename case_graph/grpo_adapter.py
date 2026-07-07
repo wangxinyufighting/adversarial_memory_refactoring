@@ -61,7 +61,7 @@ def build_verl_row(state: Dict[str, Any], index: int = 0) -> Dict[str, Any]:
     }
 
 
-def build_verl_row_online(state: Dict[str, Any], tokenizer=None) -> Dict[str, Any]:
+def build_verl_row_online(state: Dict[str, Any], tokenizer=None, index: int = 0) -> Dict[str, Any]:
     """Convert online training state to verl row format.
 
     Similar to build_verl_row but includes UID for GRPO grouping and episode metadata.
@@ -87,6 +87,7 @@ def build_verl_row_online(state: Dict[str, Any], tokenizer=None) -> Dict[str, An
         "data_source": "memory_refactor_online",
         "prompt": prompt_messages,
         "raw_prompt": prompt_messages,  # verl expects this field
+        "index": index,  # verl expects this field
         "reward_model": {"ground_truth": json.dumps(ground_truth, ensure_ascii=False)},
         "extra_info": {
             "uid": state.get("uid", f"{state.get('case_id', 'unknown')}_ep{state.get('episode', 0)}"),

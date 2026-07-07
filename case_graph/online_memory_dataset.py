@@ -286,7 +286,7 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
 
             if state is not None:
                 # Convert to verl format
-                return build_verl_row_online(state)
+                return build_verl_row_online(state, index=idx)
 
         # All attempts failed or succeeded in initial defense
         # Return to next case
