@@ -6,12 +6,11 @@ and verl's GRPO training infrastructure.
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-import ray
-from omegaconf import DictConfig, OmegaConf
 
 from .grpo_adapter import compute_score
 from .online_memory_dataset import OnlineMemoryDataset
@@ -74,130 +73,71 @@ class OnlineMemoryTrainer:
         logger.info(f"Total graphs: {len(self.dataset.graphs)}")
         logger.info("=" * 60)
 
-        # Build verl config
-        verl_config = self._build_verl_config()
-
         # Run verl training
-        self._run_verl_training(verl_config)
+        self._run_verl_training()
 
         logger.info("\nTraining complete!")
 
-    def _build_verl_config(self) -> DictConfig:
-        """Build verl-compatible hydra config from our config."""
-        # Load base verl config if exists
-        verl_base_config = self.config.get("verl", {})
-
-        # Build custom data config pointing to our dataset
-        data_config = {
-            "custom_cls": {
-                "path": "case_graph.online_memory_dataset",
-                "name": "OnlineMemoryDataset",
-                "init_kwargs": {
-                    "graph_files": [str(p) for p in self.dataset.env.graphs],
-                    "config": self.config,
-                    "initial_memory_dir": None,
-                }
-            },
-            "train_batch_size": self.config.get("train_batch_size", 4),
-            "val_batch_size": self.config.get("val_batch_size", 4),
-        }
-
-        # Build model config
-        model_config = {
-            "path": self.model_path,
-            "enable_gradient_checkpointing": True,
-        }
-
-        # Build rollout config
-        rollout_config = verl_base_config.get("actor_rollout_ref", {}).get("rollout", {})
-        rollout_config.update({
-            "name": self.config.get("infer_backend", "vllm"),
-            "n": self.config.get("rollout_n", 4),
-            "temperature": self.config.get("temperature", 1.0),
-            "tensor_model_parallel_size": self.config.get("rollout_tp", 1),
-            "gpu_memory_utilization": self.config.get("rollout_gpu_memory_utilization", 0.6),
-            "seed": self.config.get("seed", 42),
-            "full_determinism": False,  # Set to True for fully deterministic training
-        })
-
-        # Build reward config with our custom reward function
-        # Note: GRPO doesn't use a reward model, but verl still expects the config structure
-        reward_config = {
-            "reward_model": {
-                "enable": False,  # Disable reward model for GRPO
-                "rollout": {
-                    "name": "vllm",
-                    "tensor_model_parallel_size": 1,
-                }
-            },
-            "reward_manager": {"name": "naive"},
-            "custom_reward_function": {
-                "path": "case_graph.grpo_adapter",
-                "name": "compute_score",
-            }
-        }
-
-        # Build trainer config
-        trainer_config = verl_base_config.get("trainer", {})
-        trainer_config.update({
-            "project_name": self.config.get("project_name", "memory_refactor_grpo_online"),
-            "experiment_name": self.config.get("experiment_name", "online_training"),
-            "logger": ["console"],
-            "n_gpus_per_node": 1,
-            "nnodes": 1,
-            "total_epochs": self.config.get("num_epochs", 3),
-            "save_freq": self.config.get("checkpoint_interval", 100),
-            "use_v1": True,
-        })
-
-        # Build algorithm config (GRPO)
-        algorithm_config = verl_base_config.get("algorithm", {})
-        algorithm_config.update({
-            "adv_estimator": "grpo",
-            "use_kl_in_reward": False,
-        })
-
-        # Combine all configs
-        full_config = {
-            "data": data_config,
-            "actor_rollout_ref": {
-                "model": model_config,
-                "rollout": rollout_config,
-                "actor": {
-                    "optim": {"lr": 1.0e-6},
-                },
-            },
-            "reward": reward_config,
-            "trainer": trainer_config,
-            "algorithm": algorithm_config,
-            "ray_kwargs": {
-                "ray_init": {
-                    "num_cpus": 8,
-                }
-            },
-        }
-
-        return OmegaConf.create(full_config)
-
-    def _run_verl_training(self, verl_config: DictConfig):
+    def _run_verl_training(self):
         """Run verl PPO training with our custom dataset."""
         try:
-            from verl.trainer.main_ppo import run_ppo, TaskRunnerV1
+            import subprocess
+            import sys
 
-            logger.info("Initializing verl trainer...")
+            logger.info("Launching verl trainer with custom dataset...")
 
-            # Initialize Ray if needed
-            if not ray.is_initialized():
-                ray.init(**OmegaConf.to_container(verl_config.ray_kwargs.ray_init))
+            # Build command-line arguments for verl (Hydra override style)
+            verl_args = [
+                sys.executable, "-m", "verl.trainer.main_ppo",
+                # Algorithm
+                "algorithm.adv_estimator=grpo",
+                "algorithm.use_kl_in_reward=False",
+                # Custom dataset
+                f"data.custom_cls.path=case_graph.online_memory_dataset",
+                f"data.custom_cls.name=OnlineMemoryDataset",
+                f"data.custom_cls.init_kwargs.graph_files=[{','.join(repr(str(p)) for p in self.dataset.env.graphs)}]",
+                f"data.custom_cls.init_kwargs.config={repr(self.config)}",
+                f"data.train_batch_size={self.config.get('train_batch_size', 4)}",
+                # Model
+                f"actor_rollout_ref.model.path={self.model_path}",
+                f"actor_rollout_ref.actor.optim.lr={self.config.get('actor_lr', 1e-6)}",
+                f"actor_rollout_ref.actor.ppo_mini_batch_size={self.config.get('ppo_mini_batch_size', 2)}",
+                # Rollout
+                f"actor_rollout_ref.rollout.name={self.config.get('infer_backend', 'vllm')}",
+                f"actor_rollout_ref.rollout.n={self.config.get('rollout_n', 4)}",
+                f"actor_rollout_ref.rollout.temperature={self.config.get('temperature', 1.0)}",
+                f"actor_rollout_ref.rollout.tensor_model_parallel_size={self.config.get('rollout_tp', 1)}",
+                f"actor_rollout_ref.rollout.gpu_memory_utilization={self.config.get('rollout_gpu_memory_utilization', 0.6)}",
+                # Custom reward function
+                "reward.custom_reward_function.path=case_graph.grpo_adapter",
+                "reward.custom_reward_function.name=compute_score",
+                "reward.reward_manager.name=naive",
+                # Trainer
+                f"trainer.project_name={self.config.get('project_name', 'memory_refactor_grpo_online')}",
+                f"trainer.experiment_name={self.config.get('experiment_name', 'online_training')}",
+                "trainer.logger=[\"console\"]",
+                f"trainer.use_v1={self.config.get('use_v1', True)}",
+                f"trainer.n_gpus_per_node={self.config.get('n_gpus_per_node', 1)}",
+                f"trainer.nnodes={self.config.get('nnodes', 1)}",
+                f"trainer.total_epochs={self.config.get('num_epochs', 3)}",
+                f"trainer.save_freq={self.config.get('checkpoint_interval', 100)}",
+            ]
 
-            logger.info("Starting verl training...")
+            logger.info(f"Running: {' '.join(verl_args[:3])} ...")
 
-            # Run PPO training
-            # Note: verl will handle dataset loading via get_dataset_class()
-            run_ppo(verl_config, task_runner_class=TaskRunnerV1)
+            # Run verl training
+            result = subprocess.run(
+                verl_args,
+                cwd=str(Path.cwd()),
+                env={**os.environ, "PYTHONPATH": str(Path.cwd())},
+                check=True,
+            )
 
             logger.info("verl training completed")
 
+        except subprocess.CalledProcessError as e:
+            logger.error(f"verl training process failed with exit code {e.returncode}")
+            raise
         except ImportError as e:
             logger.error(f"Failed to import verl: {e}")
             logger.error("verl integration requires verl library to be installed")
