@@ -4,11 +4,13 @@ set -euo pipefail
 # Online GRPO training for memory refactoring
 # Generates attacks on-demand during training and maintains per-case memory states
 
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-3}
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${ROOT_DIR}/compat:${ROOT_DIR}:${ROOT_DIR}/verl:${PYTHONPATH:-}"
 
 # Defaults
-GRAPHS_DIR=${GRAPHS_DIR:-outputs/case_graphs}
+GRAPHS_DIR=${GRAPHS_DIR:-outputs/case_graphs_train}
 MODEL_PATH=${MODEL_PATH:-/mnt/local2/wxy/models/Qwen3-0.6B}
 OUTPUT_DIR=${OUTPUT_DIR:-outputs/online_grpo}
 CONFIG_FILE=${CONFIG_FILE:-configs/online_grpo.yaml}

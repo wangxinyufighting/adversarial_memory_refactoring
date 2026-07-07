@@ -121,7 +121,7 @@ class OnlineMemoryTrainer:
                 # Data - use custom dataset class
                 f"data.train_files={dataset_config_file}",
                 f"data.train_batch_size={self.config.get('train_batch_size', 4)}",
-                "data.custom_cls.path=case_graph/online_memory_dataset.py",
+                "data.custom_cls.path=pkg://case_graph.online_memory_dataset",
                 "data.custom_cls.name=OnlineMemoryDataset",
                 # Model
                 f"actor_rollout_ref.model.path={self.model_path}",
@@ -138,7 +138,7 @@ class OnlineMemoryTrainer:
                 # Reference model
                 f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={self.config.get('log_prob_micro_batch_size_per_gpu', 1)}",
                 # Custom reward function
-                "reward.custom_reward_function.path=case_graph/grpo_adapter.py",
+                "reward.custom_reward_function.path=pkg://case_graph.grpo_adapter",
                 "reward.custom_reward_function.name=compute_score",
                 "reward.reward_manager.name=naive",
                 # Trainer
