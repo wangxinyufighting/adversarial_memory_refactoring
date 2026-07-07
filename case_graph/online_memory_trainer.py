@@ -119,7 +119,15 @@ class OnlineMemoryTrainer:
         })
 
         # Build reward config with our custom reward function
+        # Note: GRPO doesn't use a reward model, but verl still expects the config structure
         reward_config = {
+            "reward_model": {
+                "enable": False,  # Disable reward model for GRPO
+                "rollout": {
+                    "name": "vllm",
+                    "tensor_model_parallel_size": 1,
+                }
+            },
             "reward_manager": {"name": "naive"},
             "custom_reward_function": {
                 "path": "case_graph.grpo_adapter",
