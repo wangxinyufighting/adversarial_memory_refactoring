@@ -245,6 +245,9 @@ def _memory_store_from_state(state: Dict[str, Any]) -> MemoryStore:
         return payload
     if isinstance(payload, list):
         return MemoryStore.from_dicts(payload)
+    if payload is None:
+        # Return empty memory store if no memory data
+        return MemoryStore()
     return MemoryStore.from_dicts(payload.get("memories", payload.get("chunks", [])))
 
 
