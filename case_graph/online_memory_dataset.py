@@ -100,8 +100,9 @@ class OnlineMemoryEnvironment:
         case_state = self.case_states[case_id]
 
         try:
-            # 1. Generate attack from graph with seed
-            route = self.routing_policy.select_route(case_state.graph, seed=seed)
+            # 1. Generate attack from graph
+            # Note: RandomWalkRoutingPolicy uses its own seed, we can't pass per-episode seed
+            route = self.routing_policy.select_route(case_state.graph)
             attack = self.attacker.generate(case_state.graph, route)
             attack_dict = {
                 "case_id": case_id,
