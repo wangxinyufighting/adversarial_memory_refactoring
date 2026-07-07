@@ -33,6 +33,19 @@ SYSTEM_PROMPT = (
     "{\"chunks\": [{\"memory_id\": \"...\", \"content\": \"...\"}]}."
 )
 
+REWARD_KEYS = (
+    "score",
+    "format_error",
+    "current_correct",
+    "regression_accuracy",
+    "failed_regression_count",
+    "new_chunk_count",
+    "current",
+    "regression_failure",
+    "chunk_count",
+    "length",
+)
+
 
 def build_verl_row(state: Dict[str, Any], index: int = 0) -> Dict[str, Any]:
     """把一个记忆重构状态转成 verl 的 RLHF parquet 行。"""
@@ -95,7 +108,7 @@ def compute_score(
     )
     evaluation = _evaluate_temp_memory(temp_memory, state)
     reward = compute_reward(proposal, evaluation)
-    return {
+    return _reward_payload({
         "score": reward.reward,
         "format_error": 0.0,
         "current_correct": float(evaluation.current_test.correct),
@@ -103,7 +116,7 @@ def compute_score(
         "failed_regression_count": float(evaluation.failed_regression_count),
         "new_chunk_count": float(len(proposal.new_chunks)),
         **reward.parts,
-    }
+    })
 
 
 def _proposal_from_response(state: Dict[str, Any], solution_str: str) -> RefactorProposal:
@@ -130,18 +143,22 @@ def _proposal_from_response(state: Dict[str, Any], solution_str: str) -> Refacto
 
 
 def _bad_score() -> Dict[str, float]:
-    return {
+    return _reward_payload({
         "score": -3.0,
-        "current": -3.0,
+        "format_error": 1.0,
+        "current_correct": 0.0,
         "regression_accuracy": 0.0,
+        "failed_regression_count": 0.0,
+        "new_chunk_count": 0.0,
+        "current": -3.0,
         "regression_failure": 0.0,
         "chunk_count": 0.0,
         "length": 0.0,
-        "current_correct": 0.0,
-        "failed_regression_count": 0.0,
-        "new_chunk_count": 0.0,
-        "format_error": 1.0,
-    }
+    })
+
+
+def _reward_payload(values: Dict[str, float]) -> Dict[str, float]:
+    return {key: float(values.get(key, 0.0)) for key in REWARD_KEYS}
 
 
 def _evaluate_temp_memory(memory_store: MemoryStore, state: Dict[str, Any]) -> SandboxEvaluation:
