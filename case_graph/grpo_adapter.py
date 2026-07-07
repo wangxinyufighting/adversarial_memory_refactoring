@@ -77,12 +77,16 @@ def build_verl_row_online(state: Dict[str, Any], tokenizer=None) -> Dict[str, An
         "uid": state.get("uid", ""),
     }
 
+    # Build the prompt messages
+    prompt_messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": build_user_prompt(state)},
+    ]
+
     return {
         "data_source": "memory_refactor_online",
-        "prompt": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(state)},
-        ],
+        "prompt": prompt_messages,
+        "raw_prompt": prompt_messages,  # verl expects this field
         "reward_model": {"ground_truth": json.dumps(ground_truth, ensure_ascii=False)},
         "extra_info": {
             "uid": state.get("uid", f"{state.get('case_id', 'unknown')}_ep{state.get('episode', 0)}"),
