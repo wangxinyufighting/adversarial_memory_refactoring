@@ -86,36 +86,65 @@ class OnlineMemoryTrainer:
 
             logger.info("Launching verl trainer with custom dataset...")
 
-            # Build command-line arguments for verl (Hydra override style)
+            # Write dataset config to a marker file that the wrapper script will read
+            dataset_config_file = Path.cwd() / "online_dataset_config.json"
+
+            # Get graph file paths from the dataset's environment
+            graph_file_paths = []
+            for graph in self.dataset.graphs:
+                # The graphs are already loaded dicts, we need to save them temporarily
+                # or reference the original files if available
+                case_id = graph.get("case_id", "unknown")
+                # Save each graph to temp location
+                temp_graph_file = self.output_dir / f"temp_graph_{case_id}.json"
+                with open(temp_graph_file, "w") as f:
+                    json.dump(graph, f)
+                graph_file_paths.append(str(temp_graph_file))
+
+            dataset_config = {
+                "graph_files": graph_file_paths,
+                "config": self.config,
+                "initial_memory_dir": None,
+            }
+            with open(dataset_config_file, "w") as f:
+                json.dump(dataset_config, f, indent=2)
+
+            logger.info(f"Dataset config saved to {dataset_config_file}")
+
+            # Use the wrapper script instead of calling verl directly
+            wrapper_script = Path(__file__).parent.parent / "scripts" / "run_verl_with_online_dataset.py"
+
+            # Build command-line arguments for verl (via wrapper)
             verl_args = [
-                sys.executable, "-m", "verl.trainer.main_ppo",
+                sys.executable, str(wrapper_script),
                 # Algorithm
                 "algorithm.adv_estimator=grpo",
                 "algorithm.use_kl_in_reward=False",
-                # Custom dataset
-                f"data.custom_cls.path=case_graph.online_memory_dataset",
-                f"data.custom_cls.name=OnlineMemoryDataset",
-                f"data.custom_cls.init_kwargs.graph_files=[{','.join(repr(str(p)) for p in self.dataset.env.graphs)}]",
-                f"data.custom_cls.init_kwargs.config={repr(self.config)}",
+                # Data - verl needs these but our dataset will override
+                "data.train_files=dummy",
                 f"data.train_batch_size={self.config.get('train_batch_size', 4)}",
                 # Model
                 f"actor_rollout_ref.model.path={self.model_path}",
                 f"actor_rollout_ref.actor.optim.lr={self.config.get('actor_lr', 1e-6)}",
                 f"actor_rollout_ref.actor.ppo_mini_batch_size={self.config.get('ppo_mini_batch_size', 2)}",
+                f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={self.config.get('ppo_micro_batch_size_per_gpu', 1)}",
                 # Rollout
                 f"actor_rollout_ref.rollout.name={self.config.get('infer_backend', 'vllm')}",
                 f"actor_rollout_ref.rollout.n={self.config.get('rollout_n', 4)}",
                 f"actor_rollout_ref.rollout.temperature={self.config.get('temperature', 1.0)}",
                 f"actor_rollout_ref.rollout.tensor_model_parallel_size={self.config.get('rollout_tp', 1)}",
                 f"actor_rollout_ref.rollout.gpu_memory_utilization={self.config.get('rollout_gpu_memory_utilization', 0.6)}",
+                f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={self.config.get('log_prob_micro_batch_size_per_gpu', 1)}",
+                # Reference model
+                f"actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu={self.config.get('log_prob_micro_batch_size_per_gpu', 1)}",
                 # Custom reward function
-                "reward.custom_reward_function.path=case_graph.grpo_adapter",
+                "reward.custom_reward_function.path=case_graph/grpo_adapter.py",
                 "reward.custom_reward_function.name=compute_score",
                 "reward.reward_manager.name=naive",
                 # Trainer
                 f"trainer.project_name={self.config.get('project_name', 'memory_refactor_grpo_online')}",
                 f"trainer.experiment_name={self.config.get('experiment_name', 'online_training')}",
-                "trainer.logger=[\"console\"]",
+                "trainer.logger=[console]",
                 f"trainer.use_v1={self.config.get('use_v1', True)}",
                 f"trainer.n_gpus_per_node={self.config.get('n_gpus_per_node', 1)}",
                 f"trainer.nnodes={self.config.get('nnodes', 1)}",
@@ -123,29 +152,24 @@ class OnlineMemoryTrainer:
                 f"trainer.save_freq={self.config.get('checkpoint_interval', 100)}",
             ]
 
-            logger.info(f"Running: {' '.join(verl_args[:3])} ...")
+            logger.info(f"Running verl wrapper with {len(verl_args)} arguments")
 
-            # Run verl training
+            # Run verl training via wrapper
             result = subprocess.run(
                 verl_args,
                 cwd=str(Path.cwd()),
-                env={**os.environ, "PYTHONPATH": str(Path.cwd())},
                 check=True,
             )
 
             logger.info("verl training completed")
 
+            # Cleanup
+            if dataset_config_file.exists():
+                dataset_config_file.unlink()
+
         except subprocess.CalledProcessError as e:
             logger.error(f"verl training process failed with exit code {e.returncode}")
             raise
-        except ImportError as e:
-            logger.error(f"Failed to import verl: {e}")
-            logger.error("verl integration requires verl library to be installed")
-            logger.error("Falling back to placeholder training loop...")
-            self._train_epoch_placeholder(
-                self.config.get("train_batch_size", 4),
-                self.config.get("checkpoint_interval", 100)
-            )
         except Exception as e:
             logger.error(f"verl training failed: {e}")
             import traceback
