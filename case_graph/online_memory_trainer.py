@@ -86,8 +86,8 @@ class OnlineMemoryTrainer:
 
             logger.info("Launching verl trainer with custom dataset...")
 
-            # Write dataset config to a marker file that the wrapper script will read
-            dataset_config_file = Path.cwd() / "online_dataset_config.json"
+            # Write dataset config to a temp file that our custom dataset will read
+            dataset_config_file = self.output_dir / "dataset_config.json"
 
             # Get graph file paths from the dataset's environment
             graph_file_paths = []
@@ -105,24 +105,24 @@ class OnlineMemoryTrainer:
                 "graph_files": graph_file_paths,
                 "config": self.config,
                 "initial_memory_dir": None,
+                "dataset_config_file": str(dataset_config_file),
             }
             with open(dataset_config_file, "w") as f:
                 json.dump(dataset_config, f, indent=2)
 
             logger.info(f"Dataset config saved to {dataset_config_file}")
 
-            # Use the wrapper script instead of calling verl directly
-            wrapper_script = Path(__file__).parent.parent / "scripts" / "run_verl_with_online_dataset.py"
-
-            # Build command-line arguments for verl (via wrapper)
+            # Build command-line arguments for verl
             verl_args = [
-                sys.executable, str(wrapper_script),
+                sys.executable, "-m", "verl.trainer.main_ppo",
                 # Algorithm
                 "algorithm.adv_estimator=grpo",
                 "algorithm.use_kl_in_reward=False",
-                # Data - verl needs these but our dataset will override
-                "data.train_files=dummy",
+                # Data - use custom dataset class
+                f"data.train_files={dataset_config_file}",
                 f"data.train_batch_size={self.config.get('train_batch_size', 4)}",
+                "data.custom_cls.path=case_graph/online_memory_dataset.py",
+                "data.custom_cls.name=OnlineMemoryDataset",
                 # Model
                 f"actor_rollout_ref.model.path={self.model_path}",
                 f"actor_rollout_ref.actor.optim.lr={self.config.get('actor_lr', 1e-6)}",

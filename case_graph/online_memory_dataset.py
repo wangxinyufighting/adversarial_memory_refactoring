@@ -171,10 +171,32 @@ class OnlineMemoryDataset:
 
     def __init__(
         self,
-        graph_files: List[str],
-        config: Dict[str, Any],
+        graph_files: Optional[List[str]] = None,
+        config: Optional[Dict[str, Any]] = None,
         initial_memory_dir: Optional[str] = None,
+        # verl standard arguments (ignored, but accepted for compatibility)
+        data_files: Optional[List[str]] = None,
+        tokenizer: Optional[Any] = None,
+        processor: Optional[Any] = None,
+        max_samples: int = -1,
     ):
+        # If called by verl with data_files, load config from the file
+        if data_files is not None and graph_files is None:
+            # verl passes the config file path as data_files[0]
+            config_file = Path(data_files[0])
+            if config_file.exists():
+                logger.info(f"Loading dataset config from {config_file}")
+                with open(config_file) as f:
+                    dataset_config = json.load(f)
+                graph_files = dataset_config["graph_files"]
+                config = dataset_config["config"]
+                initial_memory_dir = dataset_config.get("initial_memory_dir")
+            else:
+                raise ValueError(f"Config file not found: {config_file}")
+
+        if graph_files is None or config is None:
+            raise ValueError("graph_files and config must be provided")
+
         self.config = config
 
         # Load and validate graphs
