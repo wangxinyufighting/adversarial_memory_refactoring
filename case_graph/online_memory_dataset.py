@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import torch.utils.data
+
 from .attacker import FrozenLLMAttacker
 from .baseline import AnswerEquivalenceJudge
 from .defense import RetrievedMemoryAnswerAgent, SuccessPool
@@ -163,7 +165,7 @@ class OnlineMemoryEnvironment:
             )
 
 
-class OnlineMemoryDataset:
+class OnlineMemoryDataset(torch.utils.data.Dataset):
     """PyTorch Dataset that generates memory refactoring states on-demand.
 
     Compatible with verl's data loading pipeline.
