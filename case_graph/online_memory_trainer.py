@@ -130,6 +130,7 @@ class OnlineMemoryTrainer:
                 "data.custom_cls.name=OnlineMemoryDataset",
                 # Model
                 f"actor_rollout_ref.model.path={self.model_path}",
+                f"actor_rollout_ref.model.dtype=bfloat16",
                 f"actor_rollout_ref.actor.optim.lr={self.config.get('actor_lr', 1e-6)}",
                 f"actor_rollout_ref.actor.ppo_mini_batch_size={self.config.get('ppo_mini_batch_size', 2)}",
                 f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={self.config.get('ppo_micro_batch_size_per_gpu', 1)}",

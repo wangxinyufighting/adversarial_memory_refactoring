@@ -4,7 +4,7 @@ set -euo pipefail
 # Online GRPO training for memory refactoring
 # Generates attacks on-demand during training and maintains per-case memory states
 
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-3}
+# export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-3}
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${ROOT_DIR}/compat:${ROOT_DIR}:${ROOT_DIR}/verl:${PYTHONPATH:-}"
