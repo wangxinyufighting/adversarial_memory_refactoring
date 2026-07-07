@@ -66,13 +66,24 @@ def build_verl_row_online(state: Dict[str, Any], tokenizer=None) -> Dict[str, An
 
     Similar to build_verl_row but includes UID for GRPO grouping and episode metadata.
     """
+    # Extract only JSON-serializable fields for ground_truth
+    ground_truth = {
+        "question": state.get("question", ""),
+        "answer": state.get("answer", ""),
+        "action": state.get("action", "add"),
+        "selected_memory_ids": state.get("selected_memory_ids", []),
+        "case_id": state.get("case_id", "unknown"),
+        "episode": state.get("episode", 0),
+        "uid": state.get("uid", ""),
+    }
+
     return {
         "data_source": "memory_refactor_online",
         "prompt": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": build_user_prompt(state)},
         ],
-        "reward_model": {"ground_truth": json.dumps(state, ensure_ascii=False)},
+        "reward_model": {"ground_truth": json.dumps(ground_truth, ensure_ascii=False)},
         "extra_info": {
             "uid": state.get("uid", f"{state.get('case_id', 'unknown')}_ep{state.get('episode', 0)}"),
             "case_id": state.get("case_id", "unknown"),
