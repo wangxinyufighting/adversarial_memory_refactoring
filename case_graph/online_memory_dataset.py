@@ -185,7 +185,11 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
         # If called by verl with data_files, load config from the file
         if data_files is not None and graph_files is None:
             # verl passes the config file path as data_files[0]
-            config_file = Path(data_files[0])
+            if isinstance(data_files, str):
+                config_file = Path(data_files)
+            elif isinstance(data_files, list) and len(data_files) > 0:
+                config_file = Path(data_files[0])
+                
             if config_file.exists():
                 logger.info(f"Loading dataset config from {config_file}")
                 with open(config_file) as f:

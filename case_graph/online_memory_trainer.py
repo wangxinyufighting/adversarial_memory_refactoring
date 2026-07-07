@@ -112,6 +112,10 @@ class OnlineMemoryTrainer:
 
             logger.info(f"Dataset config saved to {dataset_config_file}")
 
+            # Convert to absolute path string for verl
+            dataset_config_path = str(dataset_config_file.resolve())
+            logger.info(f"Dataset config absolute path: {dataset_config_path}")
+
             # Build command-line arguments for verl
             verl_args = [
                 sys.executable, "-m", "verl.trainer.main_ppo",
@@ -119,7 +123,8 @@ class OnlineMemoryTrainer:
                 "algorithm.adv_estimator=grpo",
                 "algorithm.use_kl_in_reward=False",
                 # Data - use custom dataset class
-                f"data.train_files={dataset_config_file}",
+                f"data.train_files={dataset_config_path}",
+                f"data.val_files={dataset_config_path}",
                 f"data.train_batch_size={self.config.get('train_batch_size', 4)}",
                 "data.custom_cls.path=pkg://case_graph.online_memory_dataset",
                 "data.custom_cls.name=OnlineMemoryDataset",
