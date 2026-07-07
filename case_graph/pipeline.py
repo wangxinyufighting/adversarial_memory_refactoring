@@ -47,6 +47,75 @@ class AlgorithmConfig:
     exp_name: str = "default"
 
 
+def prepare_refactor_state(
+    attack: Dict[str, Any],
+    memory_store: MemoryStore,
+    success_pool: SuccessPool,
+    answer_agent: RetrievedMemoryAnswerAgent,
+    judge: AnswerEquivalenceJudge,
+    config: AlgorithmConfig,
+    step: int,
+) -> Optional[Dict[str, Any]]:
+    """Prepare one refactoring state from attack (used by both offline & online).
+
+    Returns None if initial defense succeeds (no refactor needed).
+    Returns state dict if refactor needed.
+    """
+    question = str(attack.get("question", ""))
+    answer = str(attack.get("answer") or attack.get("gold_answer") or "")
+    case_id = str(attack.get("case_id", ""))
+    golden_facts = attack.get("golden_facts", [])
+
+    if not question or not answer:
+        raise ValueError("Each attack must contain question and answer.")
+
+    # Initial defense check
+    initial = run_initial_defense(
+        question=question,
+        gold_answer=answer,
+        memory_store=memory_store,
+        answer_agent=answer_agent,
+        judge=judge,
+        success_pool=success_pool,
+        top_k=config.top_k,
+        min_score=config.min_score,
+    )
+
+    if initial.correct:
+        return None  # No refactor needed
+
+    # Decide action (add/merge)
+    decision = SimilarityActionRouter(config.tau, config.top_k).choose_action(
+        question=question,
+        memory_store=memory_store,
+    )
+
+    # Prepare regression questions
+    regression_questions = prepare_regression_questions(
+        decision=decision,
+        memory_store=memory_store,
+        success_pool=success_pool,
+        sample_size=config.regression_sample_size,
+        seed=config.seed + step,
+    )
+
+    # Build state
+    return {
+        "case_id": case_id,
+        "step": step,
+        "question": question,
+        "answer": answer,
+        "golden_facts": golden_facts,
+        "current_memory": {"memories": [chunk.to_dict() for chunk in memory_store.chunks]},
+        "action": decision.action,
+        "selected_memory_ids": decision.selected_memory_ids,
+        "regression_questions": [r.to_dict() for r in regression_questions],
+        "top_k": config.top_k,
+        "decision": decision,
+        "initial_defense": initial.to_dict(),
+    }
+
+
 @dataclass(frozen=True)
 class AlgorithmStepResult:
     case_id: str
@@ -133,24 +202,25 @@ class MemoryRefactoringPipeline:
         high_priority_buffer: HighPriorityBuffer,
         step: int,
     ) -> AlgorithmStepResult:
+        """Run one memory refactoring step."""
         question = str(attack.get("question", ""))
         answer = str(attack.get("answer") or attack.get("gold_answer") or "")
         case_id = str(attack.get("case_id", ""))
         golden_facts = attack.get("golden_facts", [])
-        if not question or not answer:
-            raise ValueError("Each attack must contain question and answer.")
 
-        initial = run_initial_defense(
-            question=question,
-            gold_answer=answer,
+        # Prepare refactor state (reusable with online training)
+        state = prepare_refactor_state(
+            attack=attack,
             memory_store=memory_store,
+            success_pool=success_pool,
             answer_agent=self.answer_agent,
             judge=self.judge,
-            success_pool=success_pool,
-            top_k=self.config.top_k,
-            min_score=self.config.min_score,
+            config=self.config,
+            step=step,
         )
-        if initial.correct:
+
+        if state is None:
+            # Initial defense succeeded, no refactor needed
             return AlgorithmStepResult(
                 case_id=case_id,
                 step=step,
@@ -160,20 +230,21 @@ class MemoryRefactoringPipeline:
                 status="initial_defense_success",
                 memory_store=memory_store,
                 current_memory=memory_store,
-                initial_defense=initial.to_dict(),
+                initial_defense=state.get("initial_defense") if state else {},
             )
 
-        decision = SimilarityActionRouter(self.config.tau, self.config.top_k).choose_action(
-            question=question,
-            memory_store=memory_store,
-        )
-        regression_questions = prepare_regression_questions(
-            decision=decision,
-            memory_store=memory_store,
-            success_pool=success_pool,
-            sample_size=self.config.regression_sample_size,
-            seed=self.config.seed + step,
-        )
+        # Run sandbox proposals
+        decision = state["decision"]
+        regression_questions_dict = state["regression_questions"]
+        regression_questions = [
+            RegressionQuestion(
+                question=r["question"],
+                answer=r["answer"],
+                source_memory_ids=r.get("source_memory_ids", []),
+            )
+            for r in regression_questions_dict
+        ]
+
         sandbox_results = self._run_sandboxes(
             attack=attack,
             decision=decision,
@@ -182,6 +253,8 @@ class MemoryRefactoringPipeline:
             answer=answer,
             regression_questions=regression_questions,
         )
+
+        # Settle and commit/rollback
         settlement = settle_grpo_rollouts(
             memory_store=memory_store,
             sandbox_results=sandbox_results,
@@ -195,6 +268,7 @@ class MemoryRefactoringPipeline:
             exp_name=self.config.exp_name,
             commit_threshold=self.config.commit_threshold,
         )
+
         return AlgorithmStepResult(
             case_id=case_id,
             step=step,
@@ -204,7 +278,7 @@ class MemoryRefactoringPipeline:
             status="refactor_committed" if settlement.committed else "refactor_rolled_back",
             memory_store=settlement.memory_store,
             current_memory=memory_store,
-            initial_defense=initial.to_dict(),
+            initial_defense=state["initial_defense"],
             decision=decision,
             regression_questions=regression_questions,
             sandbox_results=sandbox_results,

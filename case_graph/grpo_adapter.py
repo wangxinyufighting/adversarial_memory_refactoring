@@ -61,6 +61,26 @@ def build_verl_row(state: Dict[str, Any], index: int = 0) -> Dict[str, Any]:
     }
 
 
+def build_verl_row_online(state: Dict[str, Any], tokenizer=None) -> Dict[str, Any]:
+    """Convert online training state to verl row format.
+
+    Similar to build_verl_row but includes UID for GRPO grouping and episode metadata.
+    """
+    return {
+        "data_source": "memory_refactor_online",
+        "prompt": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_user_prompt(state)},
+        ],
+        "reward_model": {"ground_truth": json.dumps(state, ensure_ascii=False)},
+        "extra_info": {
+            "uid": state.get("uid", f"{state.get('case_id', 'unknown')}_ep{state.get('episode', 0)}"),
+            "case_id": state.get("case_id", "unknown"),
+            "episode": state.get("episode", 0),
+        },
+    }
+
+
 def build_user_prompt(state: Dict[str, Any]) -> str:
     memory_store = _memory_store_from_state(state)
     selected_ids = state.get("selected_memory_ids", [])

@@ -1,0 +1,77 @@
+# Online GRPO Training Configuration
+
+# Training
+num_epochs: 3
+train_batch_size: 4
+ppo_mini_batch_size: 2
+rollout_n: 4
+temperature: 1.0
+seed: 42
+
+# Environment
+episodes_per_case: 100
+tau: 0.7  # Add/merge similarity threshold
+top_k: 5
+regression_sample_size: 3
+commit_threshold: 0.0  # Commit if best reward > 0
+
+# Attack generation
+routing_policy: "random_walk"
+routing_max_steps: 3
+routing_min_nodes: 1
+routing_attempts: 8
+routing_seed_offset: 10000
+max_attack_attempts: 10
+
+# Model
+max_prompt_length: 8192
+max_response_length: 512
+
+# Logging
+log_interval: 10
+checkpoint_interval: 100
+
+# verl-specific settings (passed to verl trainer)
+verl:
+  algorithm:
+    adv_estimator: grpo
+    use_kl_in_reward: false
+
+  actor_rollout_ref:
+    model:
+      # model.path set via command line
+      ppo_mini_batch_size: 2
+      ppo_micro_batch_size_per_gpu: 1
+
+    actor:
+      optim:
+        lr: 1.0e-6
+
+    rollout:
+      name: vllm
+      tensor_model_parallel_size: 1
+      gpu_memory_utilization: 0.6
+      log_prob_micro_batch_size_per_gpu: 1
+      n: 4  # Must match rollout_n above
+      temperature: 1.0
+
+    ref:
+      log_prob_micro_batch_size_per_gpu: 1
+
+  reward:
+    reward_manager:
+      name: naive
+    custom_reward_function:
+      # Set dynamically in code
+      path: ""
+      name: compute_score
+
+  trainer:
+    project_name: memory_refactor_grpo_online
+    experiment_name: online_training
+    logger: ["console", "wandb"]
+    n_gpus_per_node: 1
+    nnodes: 1
+    total_epochs: 3
+    save_freq: 100
+    test_freq: 100
