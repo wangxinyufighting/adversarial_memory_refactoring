@@ -146,7 +146,7 @@ class OnlineMemoryTrainer:
                 "data.custom_cls.name=OnlineMemoryDataset",
                 # Model
                 f"actor_rollout_ref.model.path={self.model_path}",
-                f"actor_rollout_ref.model.override_config.attn_implementation={attn_implementation}",
+                f"+actor_rollout_ref.model.override_config.attn_implementation={attn_implementation}",
                 f"actor_rollout_ref.actor.fsdp_config.model_dtype={model_dtype}",
                 f"actor_rollout_ref.ref.fsdp_config.model_dtype={model_dtype}",
                 f"actor_rollout_ref.actor.optim.lr={self.config.get('actor_lr', 1e-6)}",
