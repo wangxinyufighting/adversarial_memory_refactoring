@@ -85,6 +85,7 @@ def normalize_verl_config(config: dict) -> dict:
     _set_default(config, "n_gpus_per_node", trainer.get("n_gpus_per_node"))
     _set_default(config, "nnodes", trainer.get("nnodes"))
     _set_default(config, "num_epochs", trainer.get("total_epochs"))
+    _set_default(config, "save_freq", trainer.get("save_freq"))
     _set_default(config, "checkpoint_interval", trainer.get("save_freq"))
     _set_default(config, "test_freq", trainer.get("test_freq"))
     return config
@@ -106,6 +107,8 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["ppo_mini_batch_size"] = args.ppo_mini_batch_size
     if args.total_epochs is not None:
         base_config["num_epochs"] = args.total_epochs
+    if args.save_freq is not None:
+        base_config["save_freq"] = args.save_freq
     if args.tau is not None:
         base_config["tau"] = args.tau
     if args.top_k is not None:
@@ -185,6 +188,7 @@ def main():
     parser.add_argument("--train-batch-size", type=int, help="Training batch size")
     parser.add_argument("--ppo-mini-batch-size", type=int, help="PPO mini-batch size")
     parser.add_argument("--total-epochs", type=int, help="Total training epochs")
+    parser.add_argument("--save-freq", type=int, help="verl model checkpoint save frequency")
 
     # Environment parameters
     parser.add_argument("--tau", type=float, help="Add/merge similarity threshold")
@@ -209,12 +213,11 @@ def main():
     )
 
     # verl backend
-    parser.add_argument("--infer-backend", default="vllm", help="Inference backend")
-    parser.add_argument("--rollout-tp", type=int, default=1, help="Tensor parallel size")
+    parser.add_argument("--infer-backend", help="Inference backend")
+    parser.add_argument("--rollout-tp", type=int, help="Tensor parallel size")
     parser.add_argument(
         "--rollout-gpu-memory-utilization",
         type=float,
-        default=0.6,
         help="GPU memory utilization"
     )
 

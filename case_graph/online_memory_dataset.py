@@ -146,15 +146,24 @@ class OnlineMemoryEnvironment:
             return None
 
         # 2. Prepare refactor state (includes initial defense check)
-        state = prepare_refactor_state(
-            attack=attack_dict,
-            memory_store=case_state.memory_store,
-            success_pool=case_state.success_pool,
-            answer_agent=self.answer_agent,
-            judge=self.judge,
-            config=self.config,
-            step=episode,
-        )
+        try:
+            state = prepare_refactor_state(
+                attack=attack_dict,
+                memory_store=case_state.memory_store,
+                success_pool=case_state.success_pool,
+                answer_agent=self.answer_agent,
+                judge=self.judge,
+                config=self.config,
+                step=episode,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Skipping invalid attack for case %s episode %s: %s",
+                case_id,
+                episode,
+                exc,
+            )
+            return None
 
         if state is None:
             # Initial defense succeeded, no refactor needed

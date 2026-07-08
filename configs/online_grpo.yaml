@@ -35,6 +35,7 @@ max_response_length: 512
 
 # Logging
 log_interval: 10
+save_freq: 100  # verl model checkpoint frequency
 checkpoint_interval: 100
 memory_save_interval: 1
 reward_num_workers: 4

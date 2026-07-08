@@ -126,6 +126,7 @@ class OnlineMemoryTrainer:
             model_dtype = self.config.get("model_dtype", "bfloat16")
             rollout_dtype = self.config.get("rollout_dtype", model_dtype)
             attn_implementation = self.config.get("attn_implementation", "flash_attention_2")
+            save_freq = self.config.get("save_freq", self.config.get("checkpoint_interval", 100))
             verl_args = [
                 sys.executable, "-m", "verl.trainer.main_ppo",
                 # Algorithm
@@ -177,7 +178,7 @@ class OnlineMemoryTrainer:
                 f"trainer.n_gpus_per_node={self.config.get('n_gpus_per_node', 1)}",
                 f"trainer.nnodes={self.config.get('nnodes', 1)}",
                 f"trainer.total_epochs={self.config.get('num_epochs', 3)}",
-                f"trainer.save_freq={self.config.get('checkpoint_interval', 100)}",
+                f"trainer.save_freq={save_freq}",
                 f"trainer.test_freq={self.config.get('test_freq', -1)}",
                 "trainer.val_before_train=False",
                 f"trainer.default_local_dir={str((self.output_dir / 'verl_checkpoints').resolve())}",

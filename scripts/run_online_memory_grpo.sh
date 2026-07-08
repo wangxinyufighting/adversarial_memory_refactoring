@@ -15,79 +15,43 @@ MODEL_PATH=${MODEL_PATH:-/mnt/local2/wxy/models/Qwen3-0.6B}
 OUTPUT_DIR=${OUTPUT_DIR:-outputs/online_grpo}
 CONFIG_FILE=${CONFIG_FILE:-configs/online_grpo.yaml}
 
-# Training hyperparameters
-ROLLOUT_N=${ROLLOUT_N:-4}
-TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-4}
-PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-2}
-TOTAL_EPOCHS=${TOTAL_EPOCHS:-3}
-
-# Environment parameters
-TAU=${TAU:-0.7}
-TOP_K=${TOP_K:-5}
-EPISODES_PER_CASE=${EPISODES_PER_CASE:-100}
-COMMIT_THRESHOLD=${COMMIT_THRESHOLD:-0.0}
-SEED=${SEED:-42}
-
-# Frozen attacker backend for on-demand attack generation
-ATTACKER_LLM=${ATTACKER_LLM:-/mnt/local2/wxy/models/Qwen3-0.6B}
-ATTACKER_API_BASE=${ATTACKER_API_BASE:-http://localhost:8003/v1}
-ATTACKER_API_KEY=${ATTACKER_API_KEY:-dummy-key}
-
-# LLM backend for inference
-INFER_BACKEND=${INFER_BACKEND:-vllm}
-ROLLOUT_TP=${ROLLOUT_TP:-1}
-ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.6}
-
-# Max lengths
-MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-8192}
-MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-512}
-MODEL_DTYPE=${MODEL_DTYPE:-bfloat16}
-ROLLOUT_DTYPE=${ROLLOUT_DTYPE:-${MODEL_DTYPE}}
-ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-flash_attention_2}
-
-# Logging
-PROJECT_NAME=${PROJECT_NAME:-memory_refactor_grpo_online}
-EXPERIMENT_NAME=${EXPERIMENT_NAME:-online_training_$(date +%Y%m%d_%H%M%S)}
-
 echo "===== Online GRPO Training Configuration ====="
 echo "Graphs directory: ${GRAPHS_DIR}"
 echo "Model path: ${MODEL_PATH}"
 echo "Output directory: ${OUTPUT_DIR}"
 echo "Config file: ${CONFIG_FILE}"
-echo "Rollout N: ${ROLLOUT_N}"
-echo "Train batch size: ${TRAIN_BATCH_SIZE}"
-echo "Total epochs: ${TOTAL_EPOCHS}"
-echo "Episodes per case: ${EPISODES_PER_CASE}"
-echo "Attacker API base: ${ATTACKER_API_BASE}"
-echo "Model dtype: ${MODEL_DTYPE}"
-echo "Attention implementation: ${ATTN_IMPLEMENTATION}"
+echo "Optional overrides: set env vars such as ROLLOUT_N, TRAIN_BATCH_SIZE, ATTACKER_API_BASE."
 echo "=============================================="
 
-python3 -m case_graph.online_memory_cli \
+args=(
   --graphs "${GRAPHS_DIR}" \
   --model-path "${MODEL_PATH}" \
   --output-dir "${OUTPUT_DIR}" \
-  --config "${CONFIG_FILE}" \
-  --rollout-n "${ROLLOUT_N}" \
-  --train-batch-size "${TRAIN_BATCH_SIZE}" \
-  --ppo-mini-batch-size "${PPO_MINI_BATCH_SIZE}" \
-  --total-epochs "${TOTAL_EPOCHS}" \
-  --tau "${TAU}" \
-  --top-k "${TOP_K}" \
-  --episodes-per-case "${EPISODES_PER_CASE}" \
-  --commit-threshold "${COMMIT_THRESHOLD}" \
-  --seed "${SEED}" \
-  --attacker-llm "${ATTACKER_LLM}" \
-  --attacker-api-base "${ATTACKER_API_BASE}" \
-  --attacker-api-key "${ATTACKER_API_KEY}" \
-  --infer-backend "${INFER_BACKEND}" \
-  --rollout-tp "${ROLLOUT_TP}" \
-  --rollout-gpu-memory-utilization "${ROLLOUT_GPU_MEMORY_UTILIZATION}" \
-  --max-prompt-length "${MAX_PROMPT_LENGTH}" \
-  --max-response-length "${MAX_RESPONSE_LENGTH}" \
-  --model-dtype "${MODEL_DTYPE}" \
-  --rollout-dtype "${ROLLOUT_DTYPE}" \
-  --attn-implementation "${ATTN_IMPLEMENTATION}" \
-  --project-name "${PROJECT_NAME}" \
-  --experiment-name "${EXPERIMENT_NAME}" \
-  "$@"
+  --config "${CONFIG_FILE}"
+)
+
+[[ -n "${ROLLOUT_N:-}" ]] && args+=(--rollout-n "${ROLLOUT_N}")
+[[ -n "${TRAIN_BATCH_SIZE:-}" ]] && args+=(--train-batch-size "${TRAIN_BATCH_SIZE}")
+[[ -n "${PPO_MINI_BATCH_SIZE:-}" ]] && args+=(--ppo-mini-batch-size "${PPO_MINI_BATCH_SIZE}")
+[[ -n "${TOTAL_EPOCHS:-}" ]] && args+=(--total-epochs "${TOTAL_EPOCHS}")
+[[ -n "${SAVE_FREQ:-}" ]] && args+=(--save-freq "${SAVE_FREQ}")
+[[ -n "${TAU:-}" ]] && args+=(--tau "${TAU}")
+[[ -n "${TOP_K:-}" ]] && args+=(--top-k "${TOP_K}")
+[[ -n "${EPISODES_PER_CASE:-}" ]] && args+=(--episodes-per-case "${EPISODES_PER_CASE}")
+[[ -n "${COMMIT_THRESHOLD:-}" ]] && args+=(--commit-threshold "${COMMIT_THRESHOLD}")
+[[ -n "${SEED:-}" ]] && args+=(--seed "${SEED}")
+[[ -n "${ATTACKER_LLM:-}" ]] && args+=(--attacker-llm "${ATTACKER_LLM}")
+[[ -n "${ATTACKER_API_BASE:-}" ]] && args+=(--attacker-api-base "${ATTACKER_API_BASE}")
+[[ -n "${ATTACKER_API_KEY:-}" ]] && args+=(--attacker-api-key "${ATTACKER_API_KEY}")
+[[ -n "${INFER_BACKEND:-}" ]] && args+=(--infer-backend "${INFER_BACKEND}")
+[[ -n "${ROLLOUT_TP:-}" ]] && args+=(--rollout-tp "${ROLLOUT_TP}")
+[[ -n "${ROLLOUT_GPU_MEMORY_UTILIZATION:-}" ]] && args+=(--rollout-gpu-memory-utilization "${ROLLOUT_GPU_MEMORY_UTILIZATION}")
+[[ -n "${MAX_PROMPT_LENGTH:-}" ]] && args+=(--max-prompt-length "${MAX_PROMPT_LENGTH}")
+[[ -n "${MAX_RESPONSE_LENGTH:-}" ]] && args+=(--max-response-length "${MAX_RESPONSE_LENGTH}")
+[[ -n "${MODEL_DTYPE:-}" ]] && args+=(--model-dtype "${MODEL_DTYPE}")
+[[ -n "${ROLLOUT_DTYPE:-}" ]] && args+=(--rollout-dtype "${ROLLOUT_DTYPE}")
+[[ -n "${ATTN_IMPLEMENTATION:-}" ]] && args+=(--attn-implementation "${ATTN_IMPLEMENTATION}")
+[[ -n "${PROJECT_NAME:-}" ]] && args+=(--project-name "${PROJECT_NAME}")
+[[ -n "${EXPERIMENT_NAME:-}" ]] && args+=(--experiment-name "${EXPERIMENT_NAME}")
+
+python3 -m case_graph.online_memory_cli "${args[@]}" "$@"

@@ -50,12 +50,14 @@ class FrozenLLMAttacker:
         response = self._client().complete_json(
             system_prompt=(
                 "You generate adversarial memory questions from graph-route evidence. "
-                "Return JSON only with question and answer."
+                "Return JSON only. The JSON object must have exactly these required "
+                "string keys: question and answer."
             ),
             user_prompt=json.dumps(
                 {
                     "case_id": case_id,
                     "route": route,
+                    "required_schema": {"question": "string", "answer": "string"},
                     "instruction": (
                         "Generate one tricky but answerable memory question Q and its correct answer A. "
                         "Both the question and answer must be grounded only in the route evidence. "
@@ -74,10 +76,13 @@ class FrozenLLMAttacker:
             ),
             max_tokens=self.max_output_tokens,
         )
+        question, answer = _extract_question_answer(response)
+        if not question or not answer:
+            raise ValueError(f"Attacker response missing question or answer: {response}")
         return AttackExample(
             case_id=case_id,
-            question=str(response.get("question", "")),
-            answer=str(response.get("answer", "")),
+            question=question,
+            answer=answer,
             golden_facts=golden_facts or [],
             route=route,
         )
@@ -95,3 +100,71 @@ class FrozenLLMAttacker:
         if self.client is None:
             self.client = OpenAIChatClient.from_env()
         return self.client
+
+
+QUESTION_KEYS = {
+    "question",
+    "q",
+    "query",
+    "prompt",
+    "memory_question",
+    "generated_question",
+}
+ANSWER_KEYS = {
+    "answer",
+    "a",
+    "gold_answer",
+    "correct_answer",
+    "target_answer",
+    "expected_answer",
+    "generated_answer",
+}
+
+
+def _extract_question_answer(response: Dict[str, Any]) -> tuple[str, str]:
+    """Read Q/A from common model response shapes without accepting empty fields."""
+    candidates = _response_candidates(response)
+    for candidate in candidates:
+        question = _first_string(candidate, QUESTION_KEYS)
+        answer = _first_string(candidate, ANSWER_KEYS)
+        if question and answer:
+            return question, answer
+    return "", ""
+
+
+def _response_candidates(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not isinstance(response, dict):
+        return []
+    candidates = [response]
+    for key in ("qa", "attack", "result", "output", "data"):
+        value = response.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+    for key in ("questions", "attacks", "items"):
+        value = response.get(key)
+        if isinstance(value, list):
+            candidates.extend(item for item in value if isinstance(item, dict))
+    return candidates
+
+
+def _first_string(payload: Dict[str, Any], keys: set[str]) -> str:
+    for key, value in payload.items():
+        if str(key).casefold() in keys:
+            text = _stringify_response_value(value)
+            if text:
+                return text
+    return ""
+
+
+def _stringify_response_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float)):
+        return str(value).strip()
+    if isinstance(value, dict):
+        for key in ("text", "value", "content"):
+            if key in value:
+                text = _stringify_response_value(value[key])
+                if text:
+                    return text
+    return ""
