@@ -41,6 +41,9 @@ ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.6}
 # Max lengths
 MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-8192}
 MAX_RESPONSE_LENGTH=${MAX_RESPONSE_LENGTH:-512}
+MODEL_DTYPE=${MODEL_DTYPE:-bfloat16}
+ROLLOUT_DTYPE=${ROLLOUT_DTYPE:-${MODEL_DTYPE}}
+ATTN_IMPLEMENTATION=${ATTN_IMPLEMENTATION:-flash_attention_2}
 
 # Logging
 PROJECT_NAME=${PROJECT_NAME:-memory_refactor_grpo_online}
@@ -56,6 +59,8 @@ echo "Train batch size: ${TRAIN_BATCH_SIZE}"
 echo "Total epochs: ${TOTAL_EPOCHS}"
 echo "Episodes per case: ${EPISODES_PER_CASE}"
 echo "Attacker API base: ${ATTACKER_API_BASE}"
+echo "Model dtype: ${MODEL_DTYPE}"
+echo "Attention implementation: ${ATTN_IMPLEMENTATION}"
 echo "=============================================="
 
 python3 -m case_graph.online_memory_cli \
@@ -80,6 +85,9 @@ python3 -m case_graph.online_memory_cli \
   --rollout-gpu-memory-utilization "${ROLLOUT_GPU_MEMORY_UTILIZATION}" \
   --max-prompt-length "${MAX_PROMPT_LENGTH}" \
   --max-response-length "${MAX_RESPONSE_LENGTH}" \
+  --model-dtype "${MODEL_DTYPE}" \
+  --rollout-dtype "${ROLLOUT_DTYPE}" \
+  --attn-implementation "${ATTN_IMPLEMENTATION}" \
   --project-name "${PROJECT_NAME}" \
   --experiment-name "${EXPERIMENT_NAME}" \
   "$@"

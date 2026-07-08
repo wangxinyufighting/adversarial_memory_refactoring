@@ -123,6 +123,9 @@ class OnlineMemoryTrainer:
 
             # Build command-line arguments for verl
             trainer_logger = self._hydra_list(self.config.get("trainer_logger", ["console"]))
+            model_dtype = self.config.get("model_dtype", "bfloat16")
+            rollout_dtype = self.config.get("rollout_dtype", model_dtype)
+            attn_implementation = self.config.get("attn_implementation", "flash_attention_2")
             verl_args = [
                 sys.executable, "-m", "verl.trainer.main_ppo",
                 # Algorithm
@@ -142,13 +145,16 @@ class OnlineMemoryTrainer:
                 "data.custom_cls.name=OnlineMemoryDataset",
                 # Model
                 f"actor_rollout_ref.model.path={self.model_path}",
-                "+actor_rollout_ref.model.torch_dtype=bfloat16",  # Use + to add new key
+                f"actor_rollout_ref.model.override_config.attn_implementation={attn_implementation}",
+                f"actor_rollout_ref.actor.fsdp_config.model_dtype={model_dtype}",
+                f"actor_rollout_ref.ref.fsdp_config.model_dtype={model_dtype}",
                 f"actor_rollout_ref.actor.optim.lr={self.config.get('actor_lr', 1e-6)}",
                 f"actor_rollout_ref.actor.ppo_mini_batch_size={self.config.get('ppo_mini_batch_size', 2)}",
                 f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={self.config.get('ppo_micro_batch_size_per_gpu', 1)}",
                 # Rollout
                 f"actor_rollout_ref.rollout.name={self.config.get('infer_backend', 'vllm')}",
                 f"actor_rollout_ref.rollout.n={self.config.get('rollout_n', 4)}",
+                f"actor_rollout_ref.rollout.dtype={rollout_dtype}",
                 "actor_rollout_ref.rollout.val_kwargs.n=1",
                 f"actor_rollout_ref.rollout.temperature={self.config.get('temperature', 1.0)}",
                 f"actor_rollout_ref.rollout.prompt_length={self.config.get('max_prompt_length', 8192)}",

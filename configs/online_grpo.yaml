@@ -24,8 +24,12 @@ routing_seed_offset: 10000
 max_attack_attempts: 10
 attacker_llm: "/mnt/local2/wxy/models/Qwen3-0.6B"  # Model name that vLLM server serves
 attacker_api_base: "http://localhost:8003/v1"  # Local vLLM server endpoint
+attacker_api_key: "dyz1029"  # API key for local vLLM server
 
 # Model
+model_dtype: bfloat16  # Required for Flash Attention 2; use float16 if your GPU lacks bf16.
+rollout_dtype: bfloat16
+attn_implementation: flash_attention_2
 max_prompt_length: 8192
 max_response_length: 512
 
@@ -47,13 +51,18 @@ verl:
       # model.path set via command line
       ppo_mini_batch_size: 2
       ppo_micro_batch_size_per_gpu: 1
+      override_config:
+        attn_implementation: flash_attention_2
 
     actor:
+      fsdp_config:
+        model_dtype: bfloat16
       optim:
         lr: 1.0e-6
 
     rollout:
       name: vllm
+      dtype: bfloat16
       tensor_model_parallel_size: 1
       gpu_memory_utilization: 0.6
       log_prob_micro_batch_size_per_gpu: 1
@@ -61,6 +70,8 @@ verl:
       temperature: 1.0
 
     ref:
+      fsdp_config:
+        model_dtype: bfloat16
       log_prob_micro_batch_size_per_gpu: 1
 
   reward:

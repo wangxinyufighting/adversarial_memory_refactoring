@@ -56,8 +56,15 @@ def normalize_verl_config(config: dict) -> dict:
     rollout = actor_rollout_ref.get("rollout", {})
     ref = actor_rollout_ref.get("ref", {})
 
+    actor_fsdp = actor.get("fsdp_config", {})
+    ref_fsdp = ref.get("fsdp_config", {})
+
     _set_default(config, "adv_estimator", algorithm.get("adv_estimator"))
     _set_default(config, "use_kl_in_reward", algorithm.get("use_kl_in_reward"))
+    _set_default(config, "model_dtype", actor_fsdp.get("model_dtype"))
+    _set_default(config, "model_dtype", ref_fsdp.get("model_dtype"))
+    _set_default(config, "model_dtype", model.get("model_dtype"))
+    _set_default(config, "attn_implementation", model.get("override_config", {}).get("attn_implementation"))
     _set_default(config, "actor_lr", actor.get("optim", {}).get("lr"))
     _set_default(config, "ppo_mini_batch_size", actor.get("ppo_mini_batch_size"))
     _set_default(config, "ppo_mini_batch_size", model.get("ppo_mini_batch_size"))
@@ -65,6 +72,7 @@ def normalize_verl_config(config: dict) -> dict:
     _set_default(config, "ppo_micro_batch_size_per_gpu", model.get("ppo_micro_batch_size_per_gpu"))
     _set_default(config, "infer_backend", rollout.get("name"))
     _set_default(config, "rollout_n", rollout.get("n"))
+    _set_default(config, "rollout_dtype", rollout.get("dtype"))
     _set_default(config, "temperature", rollout.get("temperature"))
     _set_default(config, "rollout_tp", rollout.get("tensor_model_parallel_size"))
     _set_default(config, "rollout_gpu_memory_utilization", rollout.get("gpu_memory_utilization"))
@@ -110,6 +118,12 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["max_prompt_length"] = args.max_prompt_length
     if args.max_response_length is not None:
         base_config["max_response_length"] = args.max_response_length
+    if args.model_dtype is not None:
+        base_config["model_dtype"] = args.model_dtype
+    if args.rollout_dtype is not None:
+        base_config["rollout_dtype"] = args.rollout_dtype
+    if args.attn_implementation is not None:
+        base_config["attn_implementation"] = args.attn_implementation
     if args.infer_backend is not None:
         base_config["infer_backend"] = args.infer_backend
     if args.rollout_tp is not None:
@@ -187,6 +201,12 @@ def main():
     # Model parameters
     parser.add_argument("--max-prompt-length", type=int, help="Max prompt tokens")
     parser.add_argument("--max-response-length", type=int, help="Max response tokens")
+    parser.add_argument("--model-dtype", help="FSDP model load dtype, e.g. bfloat16 or float16")
+    parser.add_argument("--rollout-dtype", help="Rollout/vLLM dtype, e.g. bfloat16 or float16")
+    parser.add_argument(
+        "--attn-implementation",
+        help="Transformers attention implementation, e.g. flash_attention_2",
+    )
 
     # verl backend
     parser.add_argument("--infer-backend", default="vllm", help="Inference backend")
