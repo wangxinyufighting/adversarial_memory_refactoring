@@ -25,7 +25,13 @@ TOTAL_EPOCHS=${TOTAL_EPOCHS:-3}
 TAU=${TAU:-0.7}
 TOP_K=${TOP_K:-5}
 EPISODES_PER_CASE=${EPISODES_PER_CASE:-100}
+COMMIT_THRESHOLD=${COMMIT_THRESHOLD:-0.0}
 SEED=${SEED:-42}
+
+# Frozen attacker backend for on-demand attack generation
+ATTACKER_LLM=${ATTACKER_LLM:-/mnt/local2/wxy/models/Qwen3-0.6B}
+ATTACKER_API_BASE=${ATTACKER_API_BASE:-http://localhost:8003/v1}
+ATTACKER_API_KEY=${ATTACKER_API_KEY:-dummy-key}
 
 # LLM backend for inference
 INFER_BACKEND=${INFER_BACKEND:-vllm}
@@ -49,6 +55,7 @@ echo "Rollout N: ${ROLLOUT_N}"
 echo "Train batch size: ${TRAIN_BATCH_SIZE}"
 echo "Total epochs: ${TOTAL_EPOCHS}"
 echo "Episodes per case: ${EPISODES_PER_CASE}"
+echo "Attacker API base: ${ATTACKER_API_BASE}"
 echo "=============================================="
 
 python3 -m case_graph.online_memory_cli \
@@ -63,7 +70,11 @@ python3 -m case_graph.online_memory_cli \
   --tau "${TAU}" \
   --top-k "${TOP_K}" \
   --episodes-per-case "${EPISODES_PER_CASE}" \
+  --commit-threshold "${COMMIT_THRESHOLD}" \
   --seed "${SEED}" \
+  --attacker-llm "${ATTACKER_LLM}" \
+  --attacker-api-base "${ATTACKER_API_BASE}" \
+  --attacker-api-key "${ATTACKER_API_KEY}" \
   --infer-backend "${INFER_BACKEND}" \
   --rollout-tp "${ROLLOUT_TP}" \
   --rollout-gpu-memory-utilization "${ROLLOUT_GPU_MEMORY_UTILIZATION}" \

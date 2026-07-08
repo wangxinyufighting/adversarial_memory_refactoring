@@ -41,7 +41,50 @@ def load_config(config_path: str) -> dict:
     """Load YAML configuration file."""
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
-    return config or {}
+    return normalize_verl_config(config or {})
+
+
+def normalize_verl_config(config: dict) -> dict:
+    """Mirror nested verl YAML defaults into the flat keys used by the wrapper."""
+    actor_rollout_ref = config.get("verl", {}).get("actor_rollout_ref", {})
+    algorithm = config.get("verl", {}).get("algorithm", {})
+    reward = config.get("verl", {}).get("reward", {})
+    trainer = config.get("verl", {}).get("trainer", {})
+
+    actor = actor_rollout_ref.get("actor", {})
+    model = actor_rollout_ref.get("model", {})
+    rollout = actor_rollout_ref.get("rollout", {})
+    ref = actor_rollout_ref.get("ref", {})
+
+    _set_default(config, "adv_estimator", algorithm.get("adv_estimator"))
+    _set_default(config, "use_kl_in_reward", algorithm.get("use_kl_in_reward"))
+    _set_default(config, "actor_lr", actor.get("optim", {}).get("lr"))
+    _set_default(config, "ppo_mini_batch_size", actor.get("ppo_mini_batch_size"))
+    _set_default(config, "ppo_mini_batch_size", model.get("ppo_mini_batch_size"))
+    _set_default(config, "ppo_micro_batch_size_per_gpu", actor.get("ppo_micro_batch_size_per_gpu"))
+    _set_default(config, "ppo_micro_batch_size_per_gpu", model.get("ppo_micro_batch_size_per_gpu"))
+    _set_default(config, "infer_backend", rollout.get("name"))
+    _set_default(config, "rollout_n", rollout.get("n"))
+    _set_default(config, "temperature", rollout.get("temperature"))
+    _set_default(config, "rollout_tp", rollout.get("tensor_model_parallel_size"))
+    _set_default(config, "rollout_gpu_memory_utilization", rollout.get("gpu_memory_utilization"))
+    _set_default(config, "log_prob_micro_batch_size_per_gpu", rollout.get("log_prob_micro_batch_size_per_gpu"))
+    _set_default(config, "log_prob_micro_batch_size_per_gpu", ref.get("log_prob_micro_batch_size_per_gpu"))
+    _set_default(config, "reward_manager", reward.get("reward_manager", {}).get("name"))
+    _set_default(config, "project_name", trainer.get("project_name"))
+    _set_default(config, "experiment_name", trainer.get("experiment_name"))
+    _set_default(config, "trainer_logger", trainer.get("logger"))
+    _set_default(config, "n_gpus_per_node", trainer.get("n_gpus_per_node"))
+    _set_default(config, "nnodes", trainer.get("nnodes"))
+    _set_default(config, "num_epochs", trainer.get("total_epochs"))
+    _set_default(config, "checkpoint_interval", trainer.get("save_freq"))
+    _set_default(config, "test_freq", trainer.get("test_freq"))
+    return config
+
+
+def _set_default(config: dict, key: str, value) -> None:
+    if value is not None and key not in config:
+        config[key] = value
 
 
 def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
@@ -67,6 +110,24 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["max_prompt_length"] = args.max_prompt_length
     if args.max_response_length is not None:
         base_config["max_response_length"] = args.max_response_length
+    if args.infer_backend is not None:
+        base_config["infer_backend"] = args.infer_backend
+    if args.rollout_tp is not None:
+        base_config["rollout_tp"] = args.rollout_tp
+    if args.rollout_gpu_memory_utilization is not None:
+        base_config["rollout_gpu_memory_utilization"] = args.rollout_gpu_memory_utilization
+    if args.project_name is not None:
+        base_config["project_name"] = args.project_name
+    if args.experiment_name is not None:
+        base_config["experiment_name"] = args.experiment_name
+    if args.commit_threshold is not None:
+        base_config["commit_threshold"] = args.commit_threshold
+    if args.attacker_llm is not None:
+        base_config["attacker_llm"] = args.attacker_llm
+    if args.attacker_api_base is not None:
+        base_config["attacker_api_base"] = args.attacker_api_base
+    if args.attacker_api_key is not None:
+        base_config["attacker_api_key"] = args.attacker_api_key
 
     return base_config
 
@@ -116,6 +177,12 @@ def main():
     parser.add_argument("--top-k", type=int, help="Top-K retrieval")
     parser.add_argument("--episodes-per-case", type=int, help="Episodes per case graph")
     parser.add_argument("--seed", type=int, help="Random seed")
+    parser.add_argument("--commit-threshold", type=float, help="Minimum reward required to commit")
+
+    # Attack generation
+    parser.add_argument("--attacker-llm", help="OpenAI-compatible attacker model name/path")
+    parser.add_argument("--attacker-api-base", help="OpenAI-compatible attacker API base URL")
+    parser.add_argument("--attacker-api-key", help="Optional attacker API key")
 
     # Model parameters
     parser.add_argument("--max-prompt-length", type=int, help="Max prompt tokens")

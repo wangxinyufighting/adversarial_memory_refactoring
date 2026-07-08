@@ -32,6 +32,9 @@ max_response_length: 512
 # Logging
 log_interval: 10
 checkpoint_interval: 100
+memory_save_interval: 1
+reward_num_workers: 4
+use_v1: true
 
 # verl-specific settings (passed to verl trainer)
 verl:

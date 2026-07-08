@@ -32,7 +32,7 @@ Reward Function → Sandbox evaluation (existing grpo_adapter.compute_score)
     ↓
 verl GRPO → Compute advantages (grouped by UID) → Update policy
     ↓
-Post-batch → Commit best proposals to per-case M_t
+Post-batch hook → Commit best proposals to per-case M_t
 ```
 
 ## Files Implemented
@@ -57,6 +57,8 @@ Post-batch → Commit best proposals to per-case M_t
 ### Modified Files
 - `case_graph/grpo_adapter.py` - Added `build_verl_row_online()`
 - `case_graph/pipeline.py` - Extracted `prepare_refactor_state()`
+- `verl/verl/trainer/ppo/v1/trainer_base.py` - Calls dataset post-batch/final hooks
+- `verl/verl/trainer/ppo/ray_trainer.py` - Calls dataset post-batch/final hooks
 
 ## Dataset Split
 
@@ -265,34 +267,19 @@ print(f'Relationships: {len(g[\"relationships\"])}')
 - Lower `tau` threshold to force more refactoring
 - Or: start with empty memory (`--initial-memory-dir` not set)
 
-## Next Steps
+## Evaluation
 
-### To Complete verl Integration
+Evaluate target questions on compressed online memory:
 
-1. **In `online_memory_trainer.py`**:
-   - Replace placeholder with actual verl trainer initialization
-   - Implement `setup_verl_trainer()` function
-   - Hook `post_batch_commit()` into verl's training loop
+```bash
+./scripts/evaluate_target_questions.sh \
+  --graphs outputs/case_graphs_test \
+  --memory-dir outputs/online_grpo/checkpoint_final/memory_states \
+  --output outputs/eval_target_questions.json \
+  --top-k 5
+```
 
-2. **Test Integration**:
-   ```bash
-   # Small scale test
-   GRAPHS_DIR=outputs/case_graphs_train \
-   MODEL_PATH=/path/to/small/model \
-   EPISODES_PER_CASE=20 \
-   ROLLOUT_N=2 \
-   bash scripts/run_online_memory_grpo.sh
-   ```
-
-3. **Full Training**:
-   ```bash
-   # Production run
-   GRAPHS_DIR=outputs/case_graphs_train \
-   MODEL_PATH=/path/to/production/model \
-   EPISODES_PER_CASE=100 \
-   ROLLOUT_N=4 \
-   bash scripts/run_online_memory_grpo.sh
-   ```
+For a detailed code-flow map, see `ONLINE_GRPO_CODE_FLOW.md`.
 
 ## References
 

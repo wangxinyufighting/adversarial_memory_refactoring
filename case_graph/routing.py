@@ -196,13 +196,14 @@ class RandomWalkRoutingPolicy:
         self.min_nodes = min_nodes
         self.attempts = attempts
 
-    def select_route(self, graph: Dict[str, Any]) -> GraphRoute:
+    def select_route(self, graph: Dict[str, Any], seed: Optional[int] = None) -> GraphRoute:
         relationships = _route_relationships(graph)
-        best = self._walk(relationships, random.Random(self.seed))
+        base_seed = self.seed if seed is None else seed
+        best = self._walk(relationships, random.Random(base_seed))
         for attempt in range(1, self.attempts):
             if len(best.nodes) >= self.min_nodes:
                 break
-            route = self._walk(relationships, random.Random(self.seed + attempt))
+            route = self._walk(relationships, random.Random(base_seed + attempt))
             if len(route.nodes) > len(best.nodes):
                 best = route
         return _score_route(graph, best)

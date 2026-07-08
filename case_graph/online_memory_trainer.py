@@ -42,6 +42,8 @@ class OnlineMemoryTrainer:
         self.model_path = model_path
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.initial_memory_dir = initial_memory_dir
+        self.config.setdefault("output_dir", str(self.output_dir))
 
         # Initialize dataset
         logger.info("Initializing online memory dataset...")
@@ -101,10 +103,13 @@ class OnlineMemoryTrainer:
                     json.dump(graph, f)
                 graph_file_paths.append(str(temp_graph_file))
 
+            dataset_runtime_config = dict(self.config)
+            dataset_runtime_config["output_dir"] = str(self.output_dir)
+
             dataset_config = {
                 "graph_files": graph_file_paths,
-                "config": self.config,
-                "initial_memory_dir": None,
+                "config": dataset_runtime_config,
+                "initial_memory_dir": self.initial_memory_dir,
                 "dataset_config_file": str(dataset_config_file),
             }
             with open(dataset_config_file, "w") as f:
@@ -117,15 +122,22 @@ class OnlineMemoryTrainer:
             logger.info(f"Dataset config absolute path: {dataset_config_path}")
 
             # Build command-line arguments for verl
+            trainer_logger = self._hydra_list(self.config.get("trainer_logger", ["console"]))
             verl_args = [
                 sys.executable, "-m", "verl.trainer.main_ppo",
                 # Algorithm
-                "algorithm.adv_estimator=grpo",
-                "algorithm.use_kl_in_reward=False",
+                f"algorithm.adv_estimator={self.config.get('adv_estimator', 'grpo')}",
+                f"algorithm.use_kl_in_reward={self.config.get('use_kl_in_reward', False)}",
                 # Data - use custom dataset class
                 f"data.train_files={dataset_config_path}",
                 f"data.val_files={dataset_config_path}",
                 f"data.train_batch_size={self.config.get('train_batch_size', 4)}",
+                f"data.val_batch_size={self.config.get('train_batch_size', 4)}",
+                f"data.max_prompt_length={self.config.get('max_prompt_length', 8192)}",
+                f"data.max_response_length={self.config.get('max_response_length', 512)}",
+                "data.dataloader_num_workers=0",
+                "data.shuffle=False",
+                "data.filter_overlong_prompts=False",
                 "data.custom_cls.path=pkg://case_graph.online_memory_dataset",
                 "data.custom_cls.name=OnlineMemoryDataset",
                 # Model
@@ -137,7 +149,10 @@ class OnlineMemoryTrainer:
                 # Rollout
                 f"actor_rollout_ref.rollout.name={self.config.get('infer_backend', 'vllm')}",
                 f"actor_rollout_ref.rollout.n={self.config.get('rollout_n', 4)}",
+                "actor_rollout_ref.rollout.val_kwargs.n=1",
                 f"actor_rollout_ref.rollout.temperature={self.config.get('temperature', 1.0)}",
+                f"actor_rollout_ref.rollout.prompt_length={self.config.get('max_prompt_length', 8192)}",
+                f"actor_rollout_ref.rollout.response_length={self.config.get('max_response_length', 512)}",
                 f"actor_rollout_ref.rollout.tensor_model_parallel_size={self.config.get('rollout_tp', 1)}",
                 f"actor_rollout_ref.rollout.gpu_memory_utilization={self.config.get('rollout_gpu_memory_utilization', 0.6)}",
                 f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={self.config.get('log_prob_micro_batch_size_per_gpu', 1)}",
@@ -146,16 +161,20 @@ class OnlineMemoryTrainer:
                 # Custom reward function
                 "reward.custom_reward_function.path=pkg://case_graph.grpo_adapter",
                 "reward.custom_reward_function.name=compute_score",
-                "reward.reward_manager.name=naive",
+                f"reward.reward_manager.name={self.config.get('reward_manager', 'naive')}",
+                f"reward.num_workers={self.config.get('reward_num_workers', 4)}",
                 # Trainer
                 f"trainer.project_name={self.config.get('project_name', 'memory_refactor_grpo_online')}",
                 f"trainer.experiment_name={self.config.get('experiment_name', 'online_training')}",
-                "trainer.logger=[console]",
+                f"trainer.logger={trainer_logger}",
                 f"trainer.use_v1={self.config.get('use_v1', True)}",
                 f"trainer.n_gpus_per_node={self.config.get('n_gpus_per_node', 1)}",
                 f"trainer.nnodes={self.config.get('nnodes', 1)}",
                 f"trainer.total_epochs={self.config.get('num_epochs', 3)}",
                 f"trainer.save_freq={self.config.get('checkpoint_interval', 100)}",
+                f"trainer.test_freq={self.config.get('test_freq', -1)}",
+                "trainer.val_before_train=False",
+                f"trainer.default_local_dir={str((self.output_dir / 'verl_checkpoints').resolve())}",
             ]
 
             logger.info(f"Running verl wrapper with {len(verl_args)} arguments")
@@ -181,6 +200,12 @@ class OnlineMemoryTrainer:
             import traceback
             traceback.print_exc()
             raise
+
+    @staticmethod
+    def _hydra_list(value: Any) -> str:
+        if isinstance(value, (list, tuple)):
+            return "[" + ",".join(str(item) for item in value) + "]"
+        return str(value)
 
     def _train_epoch_placeholder(self, batch_size: int, checkpoint_interval: int):
         """Placeholder for epoch training loop (fallback when verl not available)."""
@@ -253,7 +278,8 @@ class OnlineMemoryTrainer:
 
                     # Commit to environment
                     current_question = state.get("question", "")
-                    self.dataset.commit_memory_update(uid, proposal, current_question)
+                    current_answer = state.get("answer", "")
+                    self.dataset.commit_memory_update(uid, proposal, current_question, current_answer)
 
                     logger.info(f"  ✓ Committed {len(proposal.new_chunks)} chunks for {uid}")
 
@@ -345,4 +371,3 @@ class OnlineMemoryTrainer:
         # verl handles model loading automatically
 
         logger.info(f"Checkpoint loaded from {checkpoint_path}")
-

@@ -292,4 +292,18 @@ Build offline GRPO training data directly from the trace:
 ```
 
 Each parquet row contains only the minimal GRPO state `S_t = (M_t, Q, F, action, regression_set)` plus the gold answer for reward calculation. Regenerate `trace.json` with the current pipeline if an older trace is missing `current_memory`.
+
+## Evaluate Compressed Memory on Target Questions
+
+After online training, evaluate held-out CaseGraph target questions by loading the compressed memory checkpoint, retrieving with the existing frozen BM25 retriever, and asking the configured LLM answer agent:
+
+```bash
+./scripts/evaluate_target_questions.sh \
+  --graphs outputs/case_graphs_test \
+  --memory-dir outputs/online_grpo/checkpoint_final/memory_states \
+  --output outputs/eval_target_questions.json \
+  --top-k 5
+```
+
+Use `--memory outputs/final_memory.json` instead of `--memory-dir` when every test case should share one memory store. The output contains per-case retrieval hits, answer-agent output, judge result, and aggregate accuracy.
 # adversarial_memory_refactoring

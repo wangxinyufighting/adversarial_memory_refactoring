@@ -2,6 +2,7 @@
 
 from .builder import CaseGraphBuilder
 from .defense import InitialDefenseOutcome, RetrievedMemoryAnswerAgent, SuccessPool, run_initial_defense
+from .evaluation import TargetEvaluationResult, evaluate_case_target
 from .grpo_adapter import build_verl_row, compute_score as compute_grpo_score, write_verl_parquet
 from .llm import LLMExtractor, OpenAIChatClient
 from .models import CaseGraph, EntityRecord, ExtractionResult, RelationshipRecord, SessionChunk
@@ -73,11 +74,13 @@ __all__ = [
     "SimilarityActionRouter",
     "SimilarityReport",
     "SuccessPool",
+    "TargetEvaluationResult",
     "archive_memory_snapshot",
     "build_sandbox_memory",
     "build_verl_row",
     "compute_grpo_score",
     "compute_reward",
+    "evaluate_case_target",
     "prepare_regression_questions",
     "prepare_attacks_from_graphs",
     "run_sandbox_evaluation",
