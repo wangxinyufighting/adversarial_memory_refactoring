@@ -127,6 +127,7 @@ class OnlineMemoryTrainer:
             rollout_dtype = self.config.get("rollout_dtype", model_dtype)
             attn_implementation = self.config.get("attn_implementation", "flash_attention_2")
             save_freq = self.config.get("save_freq", self.config.get("checkpoint_interval", 100))
+            resume_from_path = self.config.get("resume_from_path")
             verl_args = [
                 sys.executable, "-m", "verl.trainer.main_ppo",
                 # Algorithm
@@ -183,6 +184,13 @@ class OnlineMemoryTrainer:
                 "trainer.val_before_train=False",
                 f"trainer.default_local_dir={str((self.output_dir / 'verl_checkpoints').resolve())}",
             ]
+            if resume_from_path:
+                verl_args.extend(
+                    [
+                        "trainer.resume_mode=resume_path",
+                        f"trainer.resume_from_path={resume_from_path}",
+                    ]
+                )
 
             logger.info(f"Running verl wrapper with {len(verl_args)} arguments")
 

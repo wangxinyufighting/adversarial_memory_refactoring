@@ -1,0 +1,74 @@
+# Alternating attacker/defender GRPO co-training.
+
+cotrain_rounds: 1
+
+# Shared training defaults
+num_epochs: 1
+train_batch_size: 4
+ppo_mini_batch_size: 2
+rollout_n: 4
+temperature: 1.0
+seed: 42
+save_freq: 100
+test_freq: -1
+
+# Fixed graph routing policy. This is not learned.
+routing_policy: "random_walk"
+routing_max_steps: 3
+routing_min_nodes: 1
+routing_attempts: 8
+routing_seed_offset: 10000
+
+# Memory/refactoring defaults
+episodes_per_case: 100
+attacker_episodes_per_case: 100
+tau: 0.7
+top_k: 5
+regression_sample_size: 3
+commit_threshold: 0.0
+checkpoint_interval: 100
+memory_save_interval: 1
+
+# Local attacker API used by the defender phase to sample attacks.
+# If attacker_served_model is omitted, the co-trainer passes the latest attacker
+# checkpoint path as the model name. In practice, point your local serving stack
+# at that checkpoint between rounds or set attacker_served_model explicitly.
+attacker_api_base: "http://localhost:8003/v1"
+attacker_api_key: "dummy-key"
+attacker_served_model: ""
+
+# Model/runtime
+model_dtype: bfloat16
+rollout_dtype: bfloat16
+attn_implementation: flash_attention_2
+max_prompt_length: 8192
+max_response_length: 512
+infer_backend: vllm
+rollout_tp: 1
+rollout_gpu_memory_utilization: 0.6
+log_prob_micro_batch_size_per_gpu: 1
+reward_num_workers: 4
+reward_manager: naive
+use_v1: true
+n_gpus_per_node: 1
+nnodes: 1
+trainer_logger: ["console"]
+project_name: adversarial_memory_cotrain
+experiment_name: attacker_defender_rounds
+
+# Role-specific overrides. These are merged over the shared defaults.
+attacker_training:
+  attacker_num_epochs: 1
+  attacker_train_batch_size: 4
+  attacker_ppo_mini_batch_size: 2
+  attacker_rollout_n: 4
+  attacker_lr: 1.0e-6
+  attacker_temperature: 1.0
+  attacker_memory_context_limit: 12
+
+defender_training:
+  num_epochs: 1
+  train_batch_size: 4
+  ppo_mini_batch_size: 2
+  rollout_n: 4
+  actor_lr: 1.0e-6

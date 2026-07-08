@@ -1,6 +1,7 @@
 """Lightweight case-level graph construction for long-term memory experiments."""
 
 from .builder import CaseGraphBuilder
+from .attacker_grpo_adapter import build_attacker_verl_row, compute_attacker_score
 from .defense import InitialDefenseOutcome, RetrievedMemoryAnswerAgent, SuccessPool, run_initial_defense
 from .evaluation import TargetEvaluationResult, evaluate_case_target
 from .grpo_adapter import build_verl_row, compute_score as compute_grpo_score, write_verl_parquet
@@ -78,6 +79,8 @@ __all__ = [
     "archive_memory_snapshot",
     "build_sandbox_memory",
     "build_verl_row",
+    "build_attacker_verl_row",
+    "compute_attacker_score",
     "compute_grpo_score",
     "compute_reward",
     "evaluate_case_target",
