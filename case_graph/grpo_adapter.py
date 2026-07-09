@@ -197,10 +197,16 @@ def compute_score(
 
 def _proposal_from_response(state: Dict[str, Any], solution_str: str) -> RefactorProposal:
     payload = _parse_json(solution_str)
-    chunks = [
-        MemoryChunk.from_dict(item, fallback_id=f"{state['action']}_{index}")
-        for index, item in enumerate(payload.get("chunks", []))
-    ]
+    chunks = []
+    for index, item in enumerate(payload.get("chunks", [])):
+        # Handle malformed output where chunks contains strings instead of dicts
+        if isinstance(item, str):
+            # Wrap string content in a minimal dict structure
+            item = {"content": item}
+        elif not isinstance(item, dict):
+            # Skip non-dict, non-string items
+            continue
+        chunks.append(MemoryChunk.from_dict(item, fallback_id=f"{state['action']}_{index}"))
     if not chunks:
         raise ValueError("policy response contains no chunks")
     if state["action"] == ADD_ACTION:
