@@ -237,6 +237,7 @@ class DenseStructuredMemoryRetriever:
         device: Optional[str] = None,
         cache_dir: Optional[str] = None,
         require_model: bool = False,
+        max_length: Optional[int] = 256,
         hash_dim: int = 384,
     ):
         self.memory_store = (
@@ -250,6 +251,7 @@ class DenseStructuredMemoryRetriever:
         self.device = device
         self.cache_dir = cache_dir
         self.require_model = bool(require_model)
+        self.max_length = int(max_length) if max_length else None
         self.hash_dim = int(hash_dim or 384)
         self.points = self._build_points()
         self._encoder = None
@@ -379,6 +381,7 @@ class DenseStructuredMemoryRetriever:
                 device=self.device,
                 cache_dir=self.cache_dir,
                 require_model=self.require_model,
+                max_length=self.max_length,
                 hash_dim=self.hash_dim,
             )
         return self._encoder
@@ -419,6 +422,7 @@ def build_memory_retriever(
             device=config.get("device"),
             cache_dir=config.get("cache_dir"),
             require_model=bool(config.get("require_model", False)),
+            max_length=int(config.get("max_length", 256)) if config.get("max_length", 256) else None,
             hash_dim=int(config.get("hash_dim", 384)),
         )
     raise ValueError(f"Unsupported retriever type: {retriever_type}")
@@ -440,6 +444,7 @@ def retriever_config_from_mapping(config: Optional[Dict[str, Any]]) -> Dict[str,
         "retriever_device": "device",
         "retriever_cache_dir": "cache_dir",
         "retriever_require_model": "require_model",
+        "retriever_max_length": "max_length",
     }
     for source, target in aliases.items():
         # Top-level keys are usually CLI/env overrides. They must win over the
@@ -494,12 +499,14 @@ class _HFEmbeddingEncoder:
         model_name: str,
         device: Optional[str] = None,
         cache_dir: Optional[str] = None,
+        max_length: Optional[int] = 256,
     ):
         import torch
         from transformers import AutoModel, AutoTokenizer
 
         self.torch = torch
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.requested_max_length = int(max_length) if max_length else None
         local_files_only = Path(model_name).exists()
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
@@ -623,6 +630,13 @@ class _HFEmbeddingEncoder:
                 return_tensors="pt",
             )
             encoded = self._clamp_encoded_inputs(encoded)
+            seq_len = int(encoded["input_ids"].shape[-1])
+            # Ensure position_ids don't exceed model's max_position_embeddings
+            seq_len = min(seq_len, self.max_length)
+            encoded["position_ids"] = torch.arange(seq_len).unsqueeze(0).expand(
+                encoded["input_ids"].shape[0],
+                seq_len,
+            )
             encoded = {key: value.to(self.device) for key, value in encoded.items()}
             with torch.no_grad():
                 outputs = self.model(**encoded)
@@ -634,23 +648,33 @@ class _HFEmbeddingEncoder:
         return vectors
 
     def _resolve_max_length(self) -> int:
-        candidates = [512]
+        candidates = [self.requested_max_length or 256]
         config_max = getattr(getattr(self.model, "config", None), "max_position_embeddings", None)
         if config_max:
-            candidates.append(int(config_max))
+            candidates.append(max(1, int(config_max) - 2))
         embeddings = getattr(self.model, "embeddings", None)
         position_embeddings = getattr(embeddings, "position_embeddings", None)
         num_embeddings = getattr(position_embeddings, "num_embeddings", None)
         if num_embeddings:
-            candidates.append(int(num_embeddings))
-        return max(1, min(candidates))
+            candidates.append(max(1, int(num_embeddings) - 2))
+        resolved = max(1, min(candidates))
+        logger.info(
+            "Resolved retriever max_length: %d (requested=%s, config_max=%s, num_embeddings=%s)",
+            resolved,
+            self.requested_max_length,
+            config_max,
+            num_embeddings,
+        )
+        return resolved
 
     def _clamp_encoded_inputs(self, encoded: Dict[str, Any]) -> Dict[str, Any]:
         input_ids = encoded.get("input_ids")
         if input_ids is None or input_ids.shape[-1] <= self.max_length:
             return encoded
         return {
-            key: value[..., : self.max_length] if hasattr(value, "shape") and value.shape[-1] > self.max_length else value
+            key: value[..., : self.max_length]
+            if hasattr(value, "shape") and len(value.shape) > 0 and value.shape[-1] > self.max_length
+            else value
             for key, value in encoded.items()
         }
 
@@ -664,17 +688,23 @@ def _get_embedding_encoder(
     device: Optional[str],
     cache_dir: Optional[str],
     require_model: bool,
+    max_length: Optional[int],
     hash_dim: int,
 ):
     embedding_model = str(embedding_model or "").casefold()
     if embedding_model in {"hash", "hashed", "hash_dense"}:
         return _HashEmbeddingEncoder(dim=hash_dim)
 
-    cache_key = (model_name, device or "", cache_dir or "")
+    cache_key = (model_name, device or "", cache_dir or "", max_length or "")
     if cache_key in _ENCODER_CACHE:
         return _ENCODER_CACHE[cache_key]
     try:
-        encoder = _HFEmbeddingEncoder(model_name=model_name, device=device, cache_dir=cache_dir)
+        encoder = _HFEmbeddingEncoder(
+            model_name=model_name,
+            device=device,
+            cache_dir=cache_dir,
+            max_length=max_length,
+        )
         _ENCODER_CACHE[cache_key] = encoder
         return encoder
     except Exception as exc:

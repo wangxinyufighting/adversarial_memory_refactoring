@@ -23,6 +23,7 @@ retriever:
   model_name: facebook/contriever
   retrieval_mode: flatten
   top_k_points: 24
+  max_length: 256
   fields: ["facts", "summary", "keywords", "content"]
   device: cpu
   require_model: false  # If false, fallback to deterministic hashed dense retrieval when HF model is unavailable.

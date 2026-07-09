@@ -159,6 +159,8 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["retriever_cache_dir"] = args.retriever_cache_dir
     if args.retriever_require_model:
         base_config["retriever_require_model"] = True
+    if args.retriever_max_length is not None:
+        base_config["retriever_max_length"] = args.retriever_max_length
     if args.reward_mode is not None:
         base_config["reward_config"] = dict(base_config.get("reward_config", {}))
         base_config["reward_config"]["mode"] = args.reward_mode
@@ -201,7 +203,10 @@ def preflight_retriever(config: dict) -> None:
                 "preflight",
                 "The user admired Jose Altuve after watching the Astros.",
                 metadata={
-                    "facts": ["The user admired Jose Altuve after watching the Astros."],
+                    "facts": [
+                        "The user admired Jose Altuve after watching the Astros. "
+                        + " ".join(["context"] * 700)
+                    ],
                     "keywords": ["Jose Altuve", "Astros"],
                     "summary": "Baseball preference memory.",
                 },
@@ -281,6 +286,7 @@ def main():
     parser.add_argument("--retriever-device", help="Retriever device, e.g. cpu or cuda:0")
     parser.add_argument("--retriever-cache-dir", help="Retriever model cache directory")
     parser.add_argument("--retriever-require-model", action="store_true", help="Fail instead of falling back to hash retrieval")
+    parser.add_argument("--retriever-max-length", type=int, help="Max token length for dense retriever encoding")
     parser.add_argument("--skip-retriever-preflight", action="store_true", help="Skip loading the configured retriever before Ray starts")
     parser.add_argument("--reward-mode", choices=["semantic_complete", "evaluation_aligned"], help="Reward evaluator mode")
     parser.add_argument("--memory-trajectory-dir", help="Directory name under output-dir for per-step M_t snapshots")
