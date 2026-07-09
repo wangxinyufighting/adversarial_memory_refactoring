@@ -532,6 +532,7 @@ class _HFEmbeddingEncoder:
             )
         self.model.to(self.device)
         self.model.eval()
+        self.max_length = self._resolve_max_length()
 
     def _load_model_on_real_device(self, model_name: str, cache_dir: Optional[str], local_files_only: bool):
         torch = self.torch
@@ -618,9 +619,10 @@ class _HFEmbeddingEncoder:
                 batch,
                 padding=True,
                 truncation=True,
-                max_length=512,
+                max_length=self.max_length,
                 return_tensors="pt",
             )
+            encoded = self._clamp_encoded_inputs(encoded)
             encoded = {key: value.to(self.device) for key, value in encoded.items()}
             with torch.no_grad():
                 outputs = self.model(**encoded)
@@ -630,6 +632,27 @@ class _HFEmbeddingEncoder:
                 pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
             vectors.extend(pooled.detach().cpu().tolist())
         return vectors
+
+    def _resolve_max_length(self) -> int:
+        candidates = [512]
+        config_max = getattr(getattr(self.model, "config", None), "max_position_embeddings", None)
+        if config_max:
+            candidates.append(int(config_max))
+        embeddings = getattr(self.model, "embeddings", None)
+        position_embeddings = getattr(embeddings, "position_embeddings", None)
+        num_embeddings = getattr(position_embeddings, "num_embeddings", None)
+        if num_embeddings:
+            candidates.append(int(num_embeddings))
+        return max(1, min(candidates))
+
+    def _clamp_encoded_inputs(self, encoded: Dict[str, Any]) -> Dict[str, Any]:
+        input_ids = encoded.get("input_ids")
+        if input_ids is None or input_ids.shape[-1] <= self.max_length:
+            return encoded
+        return {
+            key: value[..., : self.max_length] if hasattr(value, "shape") and value.shape[-1] > self.max_length else value
+            for key, value in encoded.items()
+        }
 
 
 _ENCODER_CACHE: Dict[tuple, Any] = {}
