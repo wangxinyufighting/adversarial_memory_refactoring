@@ -30,12 +30,34 @@ checkpoint_interval: 100
 memory_save_interval: 1
 
 # Local attacker API used by the defender phase to sample attacks.
-# If attacker_served_model is omitted, the co-trainer passes the latest attacker
-# checkpoint path as the model name. In practice, point your local serving stack
-# at that checkpoint between rounds or set attacker_served_model explicitly.
 attacker_api_base: "http://localhost:8003/v1"
 attacker_api_key: "dummy-key"
-attacker_served_model: ""
+attacker_served_model: "attacker-current"
+
+# Automatically merge the latest attacker checkpoint, restart vLLM, and wait
+# until /v1/models reports attacker_served_model before each defender phase.
+manage_attacker_server: true
+attacker_server:
+  enabled: true
+  host: "0.0.0.0"
+  request_host: "localhost"
+  port: 8003
+  served_model_name: "attacker-current"
+  checkpoint_backend: "fsdp"
+  checkpoint_subdir: "actor"
+  merge_checkpoints: true
+  reuse_export_if_exists: true
+  export_dir: ""
+  dtype: bfloat16
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.6
+  startup_timeout: 600
+  health_check_interval: 5
+  shutdown_timeout: 30
+  keep_alive_after_defender: false
+  keep_alive_after_train: false
+  trust_remote_code: false
+  extra_args: []
 
 # Model/runtime
 model_dtype: bfloat16

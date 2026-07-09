@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import sys
+from urllib.parse import urlparse
 from pathlib import Path
 
 import yaml
@@ -31,11 +32,45 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--attacker-served-model",
         help=(
-            "Model name served by the attacker API. If omitted, the latest attacker "
-            "checkpoint path is passed as the model name after each attacker phase."
+            "Model name served by the attacker API, e.g. attacker-current."
         ),
     )
+    parser.add_argument(
+        "--manage-attacker-server",
+        dest="manage_attacker_server",
+        action="store_true",
+        default=None,
+        help="Merge attacker checkpoints and manage the vLLM attacker server.",
+    )
+    parser.add_argument(
+        "--no-manage-attacker-server",
+        dest="manage_attacker_server",
+        action="store_false",
+        help="Do not start or stop the attacker server from this process.",
+    )
+    parser.add_argument("--attacker-server-host", help="Host passed to vLLM --host")
+    parser.add_argument("--attacker-server-port", type=int, help="Port passed to vLLM --port")
+    parser.add_argument("--attacker-server-dtype", help="vLLM dtype for the attacker server")
+    parser.add_argument("--attacker-server-tp", type=int, help="vLLM tensor parallel size")
+    parser.add_argument(
+        "--attacker-server-gpu-memory-utilization",
+        type=float,
+        help="vLLM GPU memory utilization for the attacker server",
+    )
+    parser.add_argument(
+        "--attacker-server-startup-timeout",
+        type=float,
+        help="Seconds to wait for attacker /v1/models to become healthy",
+    )
     return parser.parse_args()
+
+
+def _attacker_server_config(config: dict) -> dict:
+    server_config = config.get("attacker_server")
+    if not isinstance(server_config, dict):
+        server_config = {}
+        config["attacker_server"] = server_config
+    return server_config
 
 
 def main() -> None:
@@ -45,8 +80,30 @@ def main() -> None:
         config["cotrain_rounds"] = args.cotrain_rounds
     if args.attacker_api_base:
         config["attacker_api_base"] = args.attacker_api_base
+        parsed = urlparse(args.attacker_api_base)
+        if parsed.hostname:
+            _attacker_server_config(config)["request_host"] = parsed.hostname
+        if parsed.port:
+            _attacker_server_config(config)["port"] = parsed.port
     if args.attacker_served_model:
         config["attacker_served_model"] = args.attacker_served_model
+        _attacker_server_config(config)["served_model_name"] = args.attacker_served_model
+    if args.manage_attacker_server is not None:
+        config["manage_attacker_server"] = args.manage_attacker_server
+        _attacker_server_config(config)["enabled"] = args.manage_attacker_server
+    if args.attacker_server_host:
+        _attacker_server_config(config)["host"] = args.attacker_server_host
+    if args.attacker_server_port is not None:
+        _attacker_server_config(config)["port"] = args.attacker_server_port
+        config["attacker_api_base"] = f"http://localhost:{args.attacker_server_port}/v1"
+    if args.attacker_server_dtype:
+        _attacker_server_config(config)["dtype"] = args.attacker_server_dtype
+    if args.attacker_server_tp is not None:
+        _attacker_server_config(config)["tensor_parallel_size"] = args.attacker_server_tp
+    if args.attacker_server_gpu_memory_utilization is not None:
+        _attacker_server_config(config)["gpu_memory_utilization"] = args.attacker_server_gpu_memory_utilization
+    if args.attacker_server_startup_timeout is not None:
+        _attacker_server_config(config)["startup_timeout"] = args.attacker_server_startup_timeout
 
     graph_files = list_graph_files(args.graphs)
     output_dir = Path(args.output_dir)

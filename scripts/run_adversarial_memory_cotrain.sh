@@ -10,6 +10,17 @@ DEFENDER_MODEL_PATH=${DEFENDER_MODEL_PATH:-/mnt/local2/wxy/models/Qwen3-0.6B}
 OUTPUT_DIR=${OUTPUT_DIR:-outputs/adversarial_cotrain}
 CONFIG_FILE=${CONFIG_FILE:-configs/adversarial_cotrain.yaml}
 
+append_bool_flag() {
+  local value="$1"
+  local true_flag="$2"
+  local false_flag="$3"
+  case "${value,,}" in
+    1|true|yes|y|on) args+=("${true_flag}") ;;
+    0|false|no|n|off) args+=("${false_flag}") ;;
+    *) echo "Invalid boolean value: ${value}" >&2; return 1 ;;
+  esac
+}
+
 args=(
   --graphs "${GRAPHS_DIR}"
   --attacker-model-path "${ATTACKER_MODEL_PATH}"
@@ -22,5 +33,12 @@ args=(
 [[ -n "${COTRAIN_ROUNDS:-}" ]] && args+=(--cotrain-rounds "${COTRAIN_ROUNDS}")
 [[ -n "${ATTACKER_API_BASE:-}" ]] && args+=(--attacker-api-base "${ATTACKER_API_BASE}")
 [[ -n "${ATTACKER_SERVED_MODEL:-}" ]] && args+=(--attacker-served-model "${ATTACKER_SERVED_MODEL}")
+[[ -n "${MANAGE_ATTACKER_SERVER:-}" ]] && append_bool_flag "${MANAGE_ATTACKER_SERVER}" --manage-attacker-server --no-manage-attacker-server
+[[ -n "${ATTACKER_SERVER_HOST:-}" ]] && args+=(--attacker-server-host "${ATTACKER_SERVER_HOST}")
+[[ -n "${ATTACKER_SERVER_PORT:-}" ]] && args+=(--attacker-server-port "${ATTACKER_SERVER_PORT}")
+[[ -n "${ATTACKER_SERVER_DTYPE:-}" ]] && args+=(--attacker-server-dtype "${ATTACKER_SERVER_DTYPE}")
+[[ -n "${ATTACKER_SERVER_TP:-}" ]] && args+=(--attacker-server-tp "${ATTACKER_SERVER_TP}")
+[[ -n "${ATTACKER_SERVER_GPU_MEMORY_UTILIZATION:-}" ]] && args+=(--attacker-server-gpu-memory-utilization "${ATTACKER_SERVER_GPU_MEMORY_UTILIZATION}")
+[[ -n "${ATTACKER_SERVER_STARTUP_TIMEOUT:-}" ]] && args+=(--attacker-server-startup-timeout "${ATTACKER_SERVER_STARTUP_TIMEOUT}")
 
 python3 -m case_graph.adversarial_cotrain_cli "${args[@]}" "$@"
