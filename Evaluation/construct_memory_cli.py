@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -18,10 +17,10 @@ from case_graph.evaluation import graph_paths, load_graph
 
 from .defender_server_manager import DefenderServerManager
 from .memory_construction import (
+    CoverageGraphAttacker,
     DefenderCheckpointPolicy,
     EvaluationMemoryConstructor,
     MemoryConstructionConfig,
-    RouteEvidenceAttacker,
     build_openai_client,
     construct_memories_for_graphs,
 )
@@ -62,9 +61,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--attacker-max-output-tokens", type=int, default=700)
     parser.add_argument(
         "--attacker-mode",
-        choices=["auto", "llm", "route"],
-        default="auto",
-        help="Use an LLM attacker, deterministic route probes, or auto fallback.",
+        choices=["llm", "coverage"],
+        default="coverage",
+        help="Use training-consistent LLM probes or high-coverage deterministic probes.",
     )
 
     parser.add_argument("--answer-api-base", help="Optional answer backbone API base.")
@@ -199,9 +198,9 @@ def _optional_client(
 
 
 def _build_attacker(args: argparse.Namespace):
-    if args.attacker_mode == "route":
-        logger.info("Using deterministic route-evidence attacker for construction probes.")
-        return RouteEvidenceAttacker()
+    if args.attacker_mode == "coverage":
+        logger.info("Using deterministic coverage attacker for evaluation memory construction.")
+        return CoverageGraphAttacker()
 
     client = _optional_client(
         model=args.attacker_model,
@@ -209,29 +208,11 @@ def _build_attacker(args: argparse.Namespace):
         api_key=args.attacker_api_key,
         timeout=args.attacker_timeout,
     )
-    if args.attacker_mode == "auto" and client is None and not _env_llm_configured():
-        logger.warning(
-            "No attacker LLM config found; falling back to deterministic route-evidence probes. "
-            "Set ATTACKER_API_BASE and ATTACKER_MODEL, or pass --attacker-mode llm, to force an LLM attacker."
-        )
-        return RouteEvidenceAttacker()
 
+    logger.info("Using LLM attacker for training-consistent construction probes.")
     return FrozenLLMAttacker(
         client=client,
         max_output_tokens=args.attacker_max_output_tokens,
-    )
-
-
-def _env_llm_configured() -> bool:
-    return any(
-        os.environ.get(name)
-        for name in (
-            "CASE_GRAPH_PROVIDER",
-            "LOCAL_API_BASE_URL",
-            "LOCAL_BASE_URL",
-            "OPENAI_API_KEY",
-            "DEEPSEEK_API_KEY",
-        )
     )
 
 

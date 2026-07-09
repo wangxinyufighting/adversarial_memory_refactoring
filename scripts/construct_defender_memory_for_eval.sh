@@ -9,6 +9,7 @@ GRAPHS=${GRAPHS:-outputs/case_graphs_test}
 OUTPUT_DIR=${OUTPUT_DIR:-outputs/eval_memory_construction/defender}
 DEFENDER_API_BASE=${DEFENDER_API_BASE:-http://localhost:8004/v1}
 DEFENDER_SERVED_MODEL=${DEFENDER_SERVED_MODEL:-defender-current}
+ATTACKER_MODE=${ATTACKER_MODE:-coverage}
 
 args=(
   --graphs "${GRAPHS}"
@@ -42,7 +43,7 @@ fi
 [[ -n "${ATTACKER_MODEL:-}" ]] && args+=(--attacker-model "${ATTACKER_MODEL}")
 [[ -n "${ATTACKER_API_KEY:-}" ]] && args+=(--attacker-api-key "${ATTACKER_API_KEY}")
 [[ -n "${ATTACKER_TIMEOUT:-}" ]] && args+=(--attacker-timeout "${ATTACKER_TIMEOUT}")
-[[ -n "${ATTACKER_MODE:-}" ]] && args+=(--attacker-mode "${ATTACKER_MODE}")
+args+=(--attacker-mode "${ATTACKER_MODE}")
 
 [[ -n "${ANSWER_API_BASE:-}" ]] && args+=(--answer-api-base "${ANSWER_API_BASE}")
 [[ -n "${ANSWER_MODEL:-}" ]] && args+=(--answer-model "${ANSWER_MODEL}")

@@ -145,6 +145,10 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["attacker_api_base"] = args.attacker_api_base
     if args.attacker_api_key is not None:
         base_config["attacker_api_key"] = args.attacker_api_key
+    if args.memory_trajectory_dir is not None:
+        base_config["memory_trajectory_dir"] = args.memory_trajectory_dir
+    if args.disable_memory_trajectory:
+        base_config["memory_trajectory_enabled"] = False
 
     return base_config
 
@@ -196,6 +200,12 @@ def main():
     parser.add_argument("--episodes-per-case", type=int, help="Episodes per case graph")
     parser.add_argument("--seed", type=int, help="Random seed")
     parser.add_argument("--commit-threshold", type=float, help="Minimum reward required to commit")
+    parser.add_argument("--memory-trajectory-dir", help="Directory name under output-dir for per-step M_t snapshots")
+    parser.add_argument(
+        "--disable-memory-trajectory",
+        action="store_true",
+        help="Disable per-commit/rollback memory trajectory snapshots",
+    )
 
     # Attack generation
     parser.add_argument("--attacker-llm", help="OpenAI-compatible attacker model name/path")

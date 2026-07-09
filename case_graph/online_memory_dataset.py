@@ -303,6 +303,9 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
         self.checkpoint_interval = int(config.get("checkpoint_interval", 100))
         self.memory_save_interval = int(config.get("memory_save_interval", 1))
         self.batch_commit_count = 0
+        self.memory_trajectory_enabled = _config_bool(config.get("memory_trajectory_enabled", True))
+        self.memory_trajectory_dir = str(config.get("memory_trajectory_dir", "memory_trajectory"))
+        self.trajectory_step = 0
 
     def _load_and_validate_graphs(self, graph_files: List[str]) -> List[Dict[str, Any]]:
         """Load graphs and filter out invalid ones."""
@@ -395,6 +398,8 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
             logger.warning("Skipping online memory commit: no rollout records found")
             return
 
+        self._ensure_initial_trajectory_snapshot()
+
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for record in records:
             uid = record.get("uid")
@@ -420,6 +425,14 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
                     },
                 )
                 logger.info("Rolled back %s: best reward %.3f", uid, best["reward"])
+                self._save_memory_trajectory_step(
+                    event="rollback",
+                    uid=uid,
+                    state=state,
+                    rewards=rewards,
+                    best_reward=best["reward"],
+                    reason="best_reward_not_positive",
+                )
                 continue
 
             try:
@@ -437,6 +450,15 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
                     },
                 )
                 logger.warning("Failed to parse winning proposal for %s: %s", uid, exc)
+                self._save_memory_trajectory_step(
+                    event="rollback",
+                    uid=uid,
+                    state=state,
+                    rewards=rewards,
+                    best_reward=best["reward"],
+                    reason="proposal_parse_failed",
+                    error=str(exc),
+                )
                 continue
 
             self.env.commit_memory_update(uid, proposal, question, current_answer=answer)
@@ -446,6 +468,15 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
                 best["reward"],
                 len(proposal.new_chunks),
             )
+            self._save_memory_trajectory_step(
+                event="commit",
+                uid=uid,
+                state=state,
+                rewards=rewards,
+                best_reward=best["reward"],
+                proposal=proposal,
+                reason="best_reward_positive",
+            )
 
         self.batch_commit_count += 1
         self._maybe_save_online_memory_checkpoint()
@@ -453,6 +484,7 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
     def on_train_end(self) -> None:
         """Persist final online memory state when the trainer exits."""
         if self.output_dir is not None:
+            self._ensure_initial_trajectory_snapshot()
             self._save_online_memory_checkpoint("final")
 
     def _extract_batch_records(self, batch: Any, tokenizer: Any) -> List[Dict[str, Any]]:
@@ -614,6 +646,79 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
         metadata_path = checkpoint_dir / "training_metadata.json"
         metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _ensure_initial_trajectory_snapshot(self) -> None:
+        if self.trajectory_step == 0:
+            self._save_memory_trajectory_step(
+                event="initial",
+                reason="before_first_online_update",
+            )
+
+    def _save_memory_trajectory_step(
+        self,
+        event: str,
+        uid: str = "",
+        state: Optional[Dict[str, Any]] = None,
+        rewards: Optional[List[float]] = None,
+        best_reward: Optional[float] = None,
+        proposal: Optional[RefactorProposal] = None,
+        reason: str = "",
+        error: str = "",
+    ) -> None:
+        """Persist a full all-case M_t snapshot for post-hoc debugging."""
+        if self.output_dir is None or not self.memory_trajectory_enabled:
+            return
+
+        state = state or {}
+        rewards = rewards or []
+        step_dir = self.output_dir / self.memory_trajectory_dir / f"step_{self.trajectory_step:06d}"
+        memory_dir = step_dir / "memory_states"
+        self.save_memory_states(str(memory_dir))
+
+        case_id = str(state.get("case_id") or _case_id_from_uid(uid) or "")
+        event_payload = {
+            "trajectory_step": self.trajectory_step,
+            "event": event,
+            "reason": reason,
+            "error": error,
+            "uid": uid,
+            "case_id": case_id,
+            "question": str(state.get("question", "")),
+            "answer": str(state.get("answer", "")),
+            "action": str(state.get("action", "")),
+            "selected_memory_ids": [str(item) for item in state.get("selected_memory_ids", [])],
+            "batch_commit_count": self.batch_commit_count,
+            "best_reward": best_reward,
+            "all_rewards": [float(item) for item in rewards],
+            "proposal": proposal.to_dict() if proposal is not None else None,
+            "case_episodes": {
+                case_id: case_state.episode_count
+                for case_id, case_state in self.env.case_states.items()
+            },
+            "memory_chunk_counts": {
+                case_id: len(case_state.memory_store.chunks)
+                for case_id, case_state in self.env.case_states.items()
+            },
+            "snapshot_dir": str(step_dir),
+            "memory_states_dir": str(memory_dir),
+        }
+        step_dir.mkdir(parents=True, exist_ok=True)
+        (step_dir / "event.json").write_text(
+            json.dumps(event_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        index_path = self.output_dir / self.memory_trajectory_dir / "index.jsonl"
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        with index_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event_payload, ensure_ascii=False) + "\n")
+
+        logger.info(
+            "Saved memory trajectory step %06d (%s) to %s",
+            self.trajectory_step,
+            event,
+            step_dir,
+        )
+        self.trajectory_step += 1
+
 
 def _tensor_rows(value: Any, count: int) -> List[Any]:
     value = _unwrap_value(value)
@@ -682,6 +787,20 @@ def _sum_reward(reward_row: Any) -> float:
     if not values:
         return 0.0
     return float(sum(float(value) for value in values))
+
+
+def _case_id_from_uid(uid: str) -> str:
+    return str(uid or "").split("_ep", 1)[0]
+
+
+def _config_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().casefold() not in {"0", "false", "no", "off", ""}
 
 
 def _to_list(value: Any) -> List[Any]:

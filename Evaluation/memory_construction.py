@@ -15,6 +15,7 @@ from case_graph.defense import RetrievedMemoryAnswerAgent, SuccessPool
 from case_graph.evidence import route_golden_facts
 from case_graph.grpo_adapter import SYSTEM_PROMPT, build_user_prompt
 from case_graph.llm import OpenAIChatClient
+from case_graph.models import EVALUATOR_METADATA_SOURCE
 from case_graph.pipeline import AlgorithmConfig, prepare_refactor_state
 from case_graph.refactoring import (
     ADD_ACTION,
@@ -26,7 +27,7 @@ from case_graph.refactoring import (
     settle_grpo_rollouts,
 )
 from case_graph.retriever import MemoryChunk, MemoryStore
-from case_graph.routing import RandomWalkRoutingPolicy, public_route_evidence
+from case_graph.routing import GraphRoute, RandomWalkRoutingPolicy, public_route_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +213,38 @@ class RouteEvidenceAttacker:
             answer=answer,
             golden_facts=facts,
             route=route_view,
+        )
+
+
+class CoverageGraphAttacker:
+    """Deterministic high-coverage probe generator for evaluation memory building."""
+
+    def __init__(self):
+        self._case_candidates: Dict[str, List[Dict[str, Any]]] = {}
+        self._case_positions: Dict[str, int] = {}
+        self._fallback = RouteEvidenceAttacker()
+
+    def generate(self, graph: Dict[str, Any], route: Any):
+        from case_graph.attacker import AttackExample
+
+        case_id = str(graph.get("case_id", ""))
+        candidates = self._case_candidates.get(case_id)
+        if candidates is None:
+            candidates = _build_coverage_candidates(graph)
+            self._case_candidates[case_id] = candidates
+
+        if not candidates:
+            return self._fallback.generate(graph, route)
+
+        position = self._case_positions.get(case_id, 0)
+        self._case_positions[case_id] = position + 1
+        candidate = candidates[position % len(candidates)]
+        return AttackExample(
+            case_id=case_id,
+            question=candidate["question"],
+            answer=candidate["answer"],
+            golden_facts=candidate["golden_facts"],
+            route=candidate["route"],
         )
 
 
@@ -513,6 +546,172 @@ def _source_ids_from_golden_facts(golden_facts: List[Dict[str, Any]]) -> List[st
             source_ids.append(source_id)
             seen.add(source_id)
     return source_ids
+
+
+def _build_coverage_candidates(graph: Dict[str, Any]) -> List[Dict[str, Any]]:
+    entities = _entity_map(graph)
+    edges = [
+        edge
+        for edge in graph.get("relationships", [])
+        if _is_public_coverage_edge(edge, entities)
+    ]
+    if not edges:
+        return []
+
+    ordered_edges = _coverage_order(edges, graph)
+    candidates = []
+    seen_keys = set()
+    for edge in ordered_edges:
+        candidate = _coverage_candidate_from_edge(graph, edge, entities)
+        if not candidate:
+            continue
+        key = (
+            candidate["question"],
+            candidate["answer"],
+            tuple(_source_ids_from_golden_facts(candidate["golden_facts"])),
+        )
+        if key in seen_keys:
+            continue
+        candidates.append(candidate)
+        seen_keys.add(key)
+    return candidates
+
+
+def _coverage_candidate_from_edge(
+    graph: Dict[str, Any],
+    edge: Dict[str, Any],
+    entities: Dict[str, Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    source = str(edge.get("source", ""))
+    target = str(edge.get("target", ""))
+    if not source or not target:
+        return None
+
+    if source == "USER":
+        answer = target
+        answer_entity = entities.get(target, {})
+        question = _coverage_question_for_user_edge(edge, answer_entity)
+    elif target == "USER":
+        answer = source
+        answer_entity = entities.get(source, {})
+        question = _coverage_question_for_user_edge(edge, answer_entity, reverse=True)
+    else:
+        answer = target
+        answer_entity = entities.get(target, {})
+        question = (
+            f"In this memory, {source} has a '{_relation_phrase(edge)}' relation "
+            f"with what {_entity_label(answer_entity)}?"
+        )
+
+    route = GraphRoute(
+        policy="coverage",
+        nodes=[source, target],
+        relationships=[edge],
+        reason="Coverage probe over graph evidence.",
+    )
+    facts = route_golden_facts(graph, route)
+    if not facts:
+        return None
+    return {
+        "question": question,
+        "answer": answer,
+        "golden_facts": facts,
+        "route": public_route_evidence(graph, route),
+    }
+
+
+def _coverage_question_for_user_edge(
+    edge: Dict[str, Any],
+    answer_entity: Dict[str, Any],
+    reverse: bool = False,
+) -> str:
+    label = _entity_label(answer_entity)
+    relation = _relation_phrase(edge)
+    if reverse:
+        return f"In this memory, what {label} has a '{relation}' relation with the user?"
+    return f"In this memory, the user has a '{relation}' relation with what {label}?"
+
+
+def _coverage_order(edges: List[Dict[str, Any]], graph: Dict[str, Any]) -> List[Dict[str, Any]]:
+    source_order = {
+        str(chunk.get("chunk_id", "")): int(chunk.get("order", index))
+        for index, chunk in enumerate(graph.get("chunks", []))
+    }
+
+    def order_key(edge: Dict[str, Any]) -> tuple:
+        source_ids = [str(item) for item in edge.get("source_ids", [])]
+        first_source_order = min((source_order.get(item, 10**9) for item in source_ids), default=10**9)
+        user_rank = 0 if edge.get("source") == "USER" or edge.get("target") == "USER" else 1
+        return (
+            first_source_order,
+            user_rank,
+            str(edge.get("source", "")),
+            str(edge.get("target", "")),
+            str(edge.get("description", "")),
+        )
+
+    primary_by_source: Dict[str, Dict[str, Any]] = {}
+    remaining: List[Dict[str, Any]] = []
+    for edge in sorted(edges, key=order_key):
+        source_ids = [str(item) for item in edge.get("source_ids", [])] or [""]
+        first_source = source_ids[0]
+        if first_source and first_source not in primary_by_source:
+            primary_by_source[first_source] = edge
+        else:
+            remaining.append(edge)
+    return list(primary_by_source.values()) + remaining
+
+
+def _is_public_coverage_edge(edge: Dict[str, Any], entities: Dict[str, Dict[str, Any]]) -> bool:
+    if edge.get("description") == "target_answer":
+        return False
+    metadata = edge.get("metadata", {})
+    if isinstance(metadata, dict) and metadata.get("source") == EVALUATOR_METADATA_SOURCE:
+        return False
+    return not (
+        _is_evaluator_entity(entities.get(str(edge.get("source", "")), {}))
+        or _is_evaluator_entity(entities.get(str(edge.get("target", "")), {}))
+    )
+
+
+def _is_evaluator_entity(entity: Dict[str, Any]) -> bool:
+    metadata = entity.get("metadata", {})
+    description = str(entity.get("description", ""))
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("source") == EVALUATOR_METADATA_SOURCE
+    ) or "Memory fact recovered from evaluator metadata." in description
+
+
+def _entity_map(graph: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    return {str(entity.get("name", "")): entity for entity in graph.get("entities", [])}
+
+
+def _entity_label(entity: Dict[str, Any]) -> str:
+    raw = str(entity.get("entity_type") or entity.get("type") or "thing").strip()
+    label = raw.split("/", 1)[0].casefold() if raw else "thing"
+    return {
+        "event": "event",
+        "object": "item",
+        "organization": "organization",
+        "place": "place",
+        "person": "person",
+        "resource": "resource",
+        "statistic": "detail",
+        "time": "time",
+        "interest": "interest",
+        "interest/skill": "interest",
+        "goal": "goal",
+        "goal/intention": "goal",
+    }.get(label, "thing")
+
+
+def _relation_phrase(edge: Dict[str, Any]) -> str:
+    relation = str(edge.get("description") or "related_to")
+    relation = relation.replace("<SEP>", " or ")
+    relation = relation.replace("_", " ")
+    relation = " ".join(relation.split())
+    return relation or "related to"
 
 
 def _preferred_route_edge(edges: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

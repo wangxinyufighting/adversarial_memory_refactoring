@@ -38,6 +38,8 @@ log_interval: 10
 save_freq: 100  # verl model checkpoint frequency
 checkpoint_interval: 100
 memory_save_interval: 1
+memory_trajectory_enabled: true
+memory_trajectory_dir: "memory_trajectory"
 reward_num_workers: 4
 use_v1: true
 
