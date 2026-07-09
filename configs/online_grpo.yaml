@@ -7,6 +7,9 @@ ppo_mini_batch_size: 8
 rollout_n: 8
 temperature: 1.0
 seed: 42
+# Increase micro batch sizes for better GPU utilization
+ppo_micro_batch_size_per_gpu: 4  # Process 4 samples at once during training
+log_prob_micro_batch_size_per_gpu: 4  # Process 4 samples at once during rollout
 
 # Environment
 episodes_per_case: 1000
@@ -25,7 +28,7 @@ retriever:
   top_k_points: 32
   max_length: 256
   fields: ["facts", "summary", "keywords", "content"]
-  device: cpu
+  device: cuda  # Move to GPU for faster reward computation
   require_model: true  # Formal training should fail fast instead of falling back to hash retrieval.
 
 # Reward shaping. Default avoids per-rollout LLM calls but checks relation/fact
@@ -75,7 +78,7 @@ checkpoint_interval: 500
 memory_save_interval: 1
 memory_trajectory_enabled: true
 memory_trajectory_dir: "memory_trajectory"
-reward_num_workers: 4
+reward_num_workers: 8  # Increase parallel reward workers for faster computation
 use_v1: true
 
 # verl-specific settings (passed to verl trainer)
@@ -88,7 +91,7 @@ verl:
     model:
       # model.path set via command line
       ppo_mini_batch_size: 8
-      ppo_micro_batch_size_per_gpu: 1
+      ppo_micro_batch_size_per_gpu: 4  # Increase from 1 to 4 for better GPU utilization
       override_config:
         attn_implementation: flash_attention_2
 
@@ -103,14 +106,14 @@ verl:
       dtype: bfloat16
       tensor_model_parallel_size: 1
       gpu_memory_utilization: 0.6
-      log_prob_micro_batch_size_per_gpu: 1
+      log_prob_micro_batch_size_per_gpu: 4  # Increase from 1 to 4 for better GPU utilization
       n: 8  # Must match rollout_n above
       temperature: 1.0
 
     ref:
       fsdp_config:
         model_dtype: bfloat16
-      log_prob_micro_batch_size_per_gpu: 1
+      log_prob_micro_batch_size_per_gpu: 4  # Increase from 1 to 4 for better GPU utilization
 
   reward:
     reward_manager:
