@@ -19,6 +19,7 @@ The output memory is intentionally fixed. Later evaluation should read `memory_s
 ```bash
 DEFENDER_API_BASE=http://localhost:8004/v1 \
 DEFENDER_SERVED_MODEL=defender-current \
+PYTHON_BIN=python \
 GRAPHS=outputs/case_graphs_test \
 OUTPUT_DIR=outputs/eval_memory_construction/defender-current \
 EPISODES_PER_CASE=100 \
@@ -33,10 +34,13 @@ If `DEFENDER_CHECKPOINT` points to a verl checkpoint rather than a HuggingFace m
 MANAGE_DEFENDER_SERVER=true \
 DEFENDER_CHECKPOINT=outputs/grpo/checkpoints/global_step_100 \
 DEFENDER_SERVER_PORT=8004 \
+PYTHON_BIN=python \
 GRAPHS=outputs/case_graphs_test \
 OUTPUT_DIR=outputs/eval_memory_construction/global_step_100 \
 ./scripts/construct_defender_memory_for_eval.sh
 ```
+
+Use the environment's `python` binary, not necessarily `python3`. Some conda setups leave `python3` pointing to the base interpreter, which can accidentally run this code under Python 3.8.
 
 Important outputs:
 

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export PYTHONPATH="${ROOT_DIR}/compat:${ROOT_DIR}:${ROOT_DIR}/verl:${PYTHONPATH:-}"
+PYTHON_BIN=${PYTHON_BIN:-python}
 
 GRAPHS=${GRAPHS:-outputs/case_graphs_test}
 OUTPUT_DIR=${OUTPUT_DIR:-outputs/eval_memory_construction/defender}
@@ -55,4 +56,4 @@ args=(
 [[ -n "${EXP_NAME:-}" ]] && args+=(--exp-name "${EXP_NAME}")
 [[ -n "${NO_TRACES:-}" ]] && args+=(--no-traces)
 
-python3 -m Evaluation.construct_memory_cli "${args[@]}" "$@"
+"${PYTHON_BIN}" -m Evaluation.construct_memory_cli "${args[@]}" "$@"
