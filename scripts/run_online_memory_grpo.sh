@@ -35,6 +35,7 @@ args=(
 [[ -n "${PPO_MINI_BATCH_SIZE:-}" ]] && args+=(--ppo-mini-batch-size "${PPO_MINI_BATCH_SIZE}")
 [[ -n "${TOTAL_EPOCHS:-}" ]] && args+=(--total-epochs "${TOTAL_EPOCHS}")
 [[ -n "${SAVE_FREQ:-}" ]] && args+=(--save-freq "${SAVE_FREQ}")
+[[ -n "${TEST_FREQ:-}" ]] && args+=(--test-freq "${TEST_FREQ}")
 [[ -n "${TAU:-}" ]] && args+=(--tau "${TAU}")
 [[ -n "${TOP_K:-}" ]] && args+=(--top-k "${TOP_K}")
 [[ -n "${TOP_K_POINTS:-}" ]] && args+=(--top-k-points "${TOP_K_POINTS}")

@@ -56,7 +56,7 @@ class OnlineMemoryTrainer:
 
         # verl trainer (will be initialized in train())
         self.verl_trainer = None
-        self.commit_threshold = config.get("commit_threshold", 0.0)
+        self.commit_threshold = config.get("commit_threshold", 1.0)
 
         # Training state
         self.global_step = 0
@@ -64,14 +64,14 @@ class OnlineMemoryTrainer:
 
     def train(self):
         """Main training loop using verl's PPO trainer."""
-        num_epochs = self.config.get("num_epochs", 3)
+        num_epochs = self.config.get("num_epochs", 8)
 
         logger.info("=" * 60)
         logger.info("Starting Online GRPO Training")
         logger.info("=" * 60)
         logger.info(f"Total epochs: {num_epochs}")
-        logger.info(f"Batch size: {self.config.get('train_batch_size', 4)}")
-        logger.info(f"Rollout N: {self.config.get('rollout_n', 4)}")
+        logger.info(f"Batch size: {self.config.get('train_batch_size', 16)}")
+        logger.info(f"Rollout N: {self.config.get('rollout_n', 8)}")
         logger.info(f"Total graphs: {len(self.dataset.graphs)}")
         logger.info("=" * 60)
 
@@ -126,7 +126,7 @@ class OnlineMemoryTrainer:
             model_dtype = self.config.get("model_dtype", "bfloat16")
             rollout_dtype = self.config.get("rollout_dtype", model_dtype)
             attn_implementation = self.config.get("attn_implementation", "flash_attention_2")
-            save_freq = self.config.get("save_freq", self.config.get("checkpoint_interval", 100))
+            save_freq = self.config.get("save_freq", self.config.get("checkpoint_interval", 500))
             verl_args = [
                 sys.executable, "-m", "verl.trainer.main_ppo",
                 # Algorithm
@@ -135,10 +135,10 @@ class OnlineMemoryTrainer:
                 # Data - use custom dataset class
                 f"data.train_files={dataset_config_path}",
                 f"data.val_files={dataset_config_path}",
-                f"data.train_batch_size={self.config.get('train_batch_size', 4)}",
-                f"data.val_batch_size={self.config.get('train_batch_size', 4)}",
+                f"data.train_batch_size={self.config.get('train_batch_size', 16)}",
+                f"data.val_batch_size={self.config.get('train_batch_size', 16)}",
                 f"data.max_prompt_length={self.config.get('max_prompt_length', 8192)}",
-                f"data.max_response_length={self.config.get('max_response_length', 512)}",
+                f"data.max_response_length={self.config.get('max_response_length', 1024)}",
                 "data.dataloader_num_workers=0",
                 "data.shuffle=False",
                 "data.filter_overlong_prompts=False",
@@ -150,16 +150,16 @@ class OnlineMemoryTrainer:
                 f"actor_rollout_ref.actor.fsdp_config.model_dtype={model_dtype}",
                 f"actor_rollout_ref.ref.fsdp_config.model_dtype={model_dtype}",
                 f"actor_rollout_ref.actor.optim.lr={self.config.get('actor_lr', 1e-6)}",
-                f"actor_rollout_ref.actor.ppo_mini_batch_size={self.config.get('ppo_mini_batch_size', 2)}",
+                f"actor_rollout_ref.actor.ppo_mini_batch_size={self.config.get('ppo_mini_batch_size', 8)}",
                 f"actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu={self.config.get('ppo_micro_batch_size_per_gpu', 1)}",
                 # Rollout
                 f"actor_rollout_ref.rollout.name={self.config.get('infer_backend', 'vllm')}",
-                f"actor_rollout_ref.rollout.n={self.config.get('rollout_n', 4)}",
+                f"actor_rollout_ref.rollout.n={self.config.get('rollout_n', 8)}",
                 f"actor_rollout_ref.rollout.dtype={rollout_dtype}",
                 "actor_rollout_ref.rollout.val_kwargs.n=1",
                 f"actor_rollout_ref.rollout.temperature={self.config.get('temperature', 1.0)}",
                 f"actor_rollout_ref.rollout.prompt_length={self.config.get('max_prompt_length', 8192)}",
-                f"actor_rollout_ref.rollout.response_length={self.config.get('max_response_length', 512)}",
+                f"actor_rollout_ref.rollout.response_length={self.config.get('max_response_length', 1024)}",
                 f"actor_rollout_ref.rollout.tensor_model_parallel_size={self.config.get('rollout_tp', 1)}",
                 f"actor_rollout_ref.rollout.gpu_memory_utilization={self.config.get('rollout_gpu_memory_utilization', 0.6)}",
                 f"actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu={self.config.get('log_prob_micro_batch_size_per_gpu', 1)}",
@@ -177,9 +177,9 @@ class OnlineMemoryTrainer:
                 f"trainer.use_v1={self.config.get('use_v1', True)}",
                 f"trainer.n_gpus_per_node={self.config.get('n_gpus_per_node', 1)}",
                 f"trainer.nnodes={self.config.get('nnodes', 1)}",
-                f"trainer.total_epochs={self.config.get('num_epochs', 3)}",
+                f"trainer.total_epochs={self.config.get('num_epochs', 8)}",
                 f"trainer.save_freq={save_freq}",
-                f"trainer.test_freq={self.config.get('test_freq', -1)}",
+                f"trainer.test_freq={self.config.get('test_freq', 500)}",
                 "trainer.val_before_train=False",
                 f"trainer.default_local_dir={str((self.output_dir / 'verl_checkpoints').resolve())}",
             ]

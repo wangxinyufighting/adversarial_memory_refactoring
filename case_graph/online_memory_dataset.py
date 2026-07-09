@@ -275,20 +275,20 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
             graphs=self.graphs,
             routing_policy=RandomWalkRoutingPolicy(
                 seed=config.get("seed", 42),
-                max_steps=config.get("routing_max_steps", 3),
+                max_steps=config.get("routing_max_steps", 4),
                 min_nodes=config.get("routing_min_nodes", 1),
-                attempts=config.get("routing_attempts", 8),
+                attempts=config.get("routing_attempts", 12),
             ),
             attacker=build_attacker_from_config(config),
             answer_agent=RetrievedMemoryAnswerAgent(),
             judge=AnswerEquivalenceJudge(),
             config=AlgorithmConfig(
-                tau=config.get("tau", 0.7),
-                top_k=config.get("top_k", 5),
-                top_k_points=config.get("top_k_points", config.get("retriever_top_k_points", 24)),
-                regression_sample_size=config.get("regression_sample_size", 3),
+                tau=config.get("tau", 0.55),
+                top_k=config.get("top_k", 8),
+                top_k_points=config.get("top_k_points", config.get("retriever_top_k_points", 32)),
+                regression_sample_size=config.get("regression_sample_size", 12),
                 seed=config.get("seed", 42),
-                commit_threshold=config.get("commit_threshold", 0.0),
+                commit_threshold=config.get("commit_threshold", 1.0),
                 retriever_config=retriever_config_from_mapping(config),
                 reward_config=dict(config.get("reward", config.get("reward_config", {})) or {}),
             ),
@@ -298,12 +298,12 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
         # Episode tracking
         self.case_rotation = 0
         self.global_seed = config.get("seed", 42)
-        self.episodes_per_case = config.get("episodes_per_case", 100)
-        self.max_attack_attempts = config.get("max_attack_attempts", 10)
+        self.episodes_per_case = config.get("episodes_per_case", 1000)
+        self.max_attack_attempts = config.get("max_attack_attempts", 20)
         self.routing_seed_offset = config.get("routing_seed_offset", 0)
-        self.commit_threshold = config.get("commit_threshold", 0.0)
+        self.commit_threshold = config.get("commit_threshold", 1.0)
         self.output_dir = Path(config["output_dir"]) if config.get("output_dir") else None
-        self.checkpoint_interval = int(config.get("checkpoint_interval", 100))
+        self.checkpoint_interval = int(config.get("checkpoint_interval", 500))
         self.memory_save_interval = int(config.get("memory_save_interval", 1))
         self.batch_commit_count = 0
         self.memory_trajectory_enabled = _config_bool(config.get("memory_trajectory_enabled", True))

@@ -77,27 +77,29 @@ python3 scripts/split_case_graphs.py outputs/case_graphs_deepseek_test \
 
 ### Environment (configs/online_grpo.yaml)
 ```yaml
-tau: 0.7                    # Add/merge similarity threshold
-top_k: 5                    # Retrieval top-K
-regression_sample_size: 3   # Regression test sample size
-episodes_per_case: 100      # Episodes per case graph
-commit_threshold: 0.0       # Commit if best reward > threshold
+tau: 0.55                   # Add/merge similarity threshold
+top_k: 8                    # Retrieval top-K
+top_k_points: 32            # Dense flattened retrieval candidates
+regression_sample_size: 12  # Regression test sample size
+episodes_per_case: 1000     # Episodes per case graph
+commit_threshold: 1.0       # Commit only clearly positive complete memories
 ```
 
 ### Training
 ```yaml
-rollout_n: 4                # N proposals per state (GRPO)
-train_batch_size: 4         # Batch size
-num_epochs: 3               # Training epochs
+rollout_n: 8                # N proposals per state (GRPO)
+train_batch_size: 16        # Batch size
+ppo_mini_batch_size: 8      # PPO mini-batch size
+num_epochs: 8               # Training epochs
 seed: 42                    # Random seed
 ```
 
 ### Attack Generation
 ```yaml
 routing_policy: "random_walk"
-routing_max_steps: 3
+routing_max_steps: 4
 routing_min_nodes: 1
-max_attack_attempts: 10
+max_attack_attempts: 20
 ```
 
 ## Usage Examples
@@ -116,9 +118,10 @@ GRAPHS_DIR=outputs/case_graphs_train \
 MODEL_PATH=/path/to/model \
 OUTPUT_DIR=outputs/custom_run \
 ROLLOUT_N=8 \
-TRAIN_BATCH_SIZE=8 \
-EPISODES_PER_CASE=200 \
-TAU=0.8 \
+TRAIN_BATCH_SIZE=16 \
+PPO_MINI_BATCH_SIZE=8 \
+EPISODES_PER_CASE=1000 \
+TAU=0.55 \
 bash scripts/run_online_memory_grpo.sh
 ```
 
@@ -138,9 +141,11 @@ python3 -m case_graph.online_memory_cli \
   --model-path /path/to/model \
   --output-dir outputs/test_run \
   --config configs/online_grpo.yaml \
-  --episodes-per-case 50 \
-  --rollout-n 4 \
-  --tau 0.7
+  --episodes-per-case 1000 \
+  --rollout-n 8 \
+  --train-batch-size 16 \
+  --ppo-mini-batch-size 8 \
+  --tau 0.55
 ```
 
 ## Key Features

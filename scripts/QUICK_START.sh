@@ -136,21 +136,24 @@ OnlineMemoryDataset (PyTorch Dataset)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Training:
-  num_epochs: 3
-  train_batch_size: 4
-  rollout_n: 4
+  num_epochs: 8
+  train_batch_size: 16
+  ppo_mini_batch_size: 8
+  rollout_n: 8
   seed: 42
 
 Environment:
-  episodes_per_case: 100
-  tau: 0.7                    # Add/merge threshold
-  top_k: 5                    # Retrieval
-  regression_sample_size: 3
-  commit_threshold: 0.0
+  episodes_per_case: 1000
+  tau: 0.55                   # Add/merge threshold
+  top_k: 8                    # Retrieval
+  top_k_points: 32            # Dense retrieval points
+  regression_sample_size: 12
+  commit_threshold: 1.0
 
 Attack:
   routing_policy: "random_walk"
-  max_attack_attempts: 10
+  routing_max_steps: 4
+  max_attack_attempts: 20
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

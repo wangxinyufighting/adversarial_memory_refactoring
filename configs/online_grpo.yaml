@@ -1,32 +1,32 @@
 # Online GRPO Training Configuration
 
 # Training
-num_epochs: 6
-train_batch_size: 8
-ppo_mini_batch_size: 4
+num_epochs: 8
+train_batch_size: 16
+ppo_mini_batch_size: 8
 rollout_n: 8
 temperature: 1.0
 seed: 42
 
 # Environment
-episodes_per_case: 500
+episodes_per_case: 1000
 tau: 0.55  # Dense add/merge similarity threshold
 top_k: 8
-top_k_points: 24
-regression_sample_size: 8
+top_k_points: 32
+regression_sample_size: 12
 commit_threshold: 1.0  # Commit only if completeness-gated reward is clearly positive
 
 # UnifiedMem-style non graph-based retrieval
 retriever:
   type: dense_structured
   embedding_model: contriever
-  model_name: facebook/contriever
+  model_name: /mnt/local2/wxy/models/contriever
   retrieval_mode: flatten
-  top_k_points: 24
+  top_k_points: 32
   max_length: 256
   fields: ["facts", "summary", "keywords", "content"]
   device: cpu
-  require_model: false  # If false, fallback to deterministic hashed dense retrieval when HF model is unavailable.
+  require_model: true  # Formal training should fail fast instead of falling back to hash retrieval.
 
 # Reward shaping. Default avoids per-rollout LLM calls but checks relation/fact
 # completeness. Set mode: evaluation_aligned to call the retrieved-memory answer
@@ -52,11 +52,11 @@ reward_config:
 
 # Attack generation
 routing_policy: "random_walk"
-routing_max_steps: 3
+routing_max_steps: 4
 routing_min_nodes: 1
-routing_attempts: 8
+routing_attempts: 12
 routing_seed_offset: 10000
-max_attack_attempts: 10
+max_attack_attempts: 20
 attacker_llm: "/mnt/local2/wxy/models/Qwen3-0.6B"  # Model name that vLLM server serves
 attacker_api_base: "http://localhost:8003/v1"  # Local vLLM server endpoint
 attacker_api_key: "dyz1029"  # API key for local vLLM server
@@ -66,12 +66,12 @@ model_dtype: bfloat16  # Required for Flash Attention 2; use float16 if your GPU
 rollout_dtype: bfloat16
 attn_implementation: flash_attention_2
 max_prompt_length: 8192
-max_response_length: 768
+max_response_length: 1024
 
 # Logging
 log_interval: 10
-save_freq: 250  # verl model checkpoint frequency
-checkpoint_interval: 250
+save_freq: 500  # verl model checkpoint frequency
+checkpoint_interval: 500
 memory_save_interval: 1
 memory_trajectory_enabled: true
 memory_trajectory_dir: "memory_trajectory"
@@ -87,7 +87,7 @@ verl:
   actor_rollout_ref:
     model:
       # model.path set via command line
-      ppo_mini_batch_size: 4
+      ppo_mini_batch_size: 8
       ppo_micro_batch_size_per_gpu: 1
       override_config:
         attn_implementation: flash_attention_2
@@ -126,6 +126,6 @@ verl:
     logger: ["console", "wandb"]
     n_gpus_per_node: 1
     nnodes: 1
-    total_epochs: 6
-    save_freq: 250
-    test_freq: 250
+    total_epochs: 8
+    save_freq: 500
+    test_freq: 500

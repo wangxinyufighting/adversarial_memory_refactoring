@@ -110,6 +110,9 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["num_epochs"] = args.total_epochs
     if args.save_freq is not None:
         base_config["save_freq"] = args.save_freq
+        base_config["checkpoint_interval"] = args.save_freq
+    if args.test_freq is not None:
+        base_config["test_freq"] = args.test_freq
     if args.tau is not None:
         base_config["tau"] = args.tau
     if args.top_k is not None:
@@ -230,6 +233,81 @@ def preflight_retriever(config: dict) -> None:
     logger.info("Retriever preflight succeeded: top_hit=%s score=%.4f", hits[0].memory_id, hits[0].score)
 
 
+def validate_training_scale(config: dict, num_graphs: int) -> None:
+    """Warn when the active config has fallen back to smoke-test scale."""
+    train_batch_size = _as_int(config.get("train_batch_size"), 16)
+    rollout_n = _as_int(config.get("rollout_n"), 8)
+    ppo_mini_batch_size = _as_int(config.get("ppo_mini_batch_size"), 8)
+    num_epochs = _as_int(config.get("num_epochs"), 8)
+    episodes_per_case = _as_int(config.get("episodes_per_case"), 1000)
+    regression_sample_size = _as_int(config.get("regression_sample_size"), 12)
+    max_response_length = _as_int(config.get("max_response_length"), 1024)
+    top_k = _as_int(config.get("top_k"), 8)
+    retriever_config = retriever_config_from_mapping(config)
+    top_k_points = _as_int(
+        config.get("top_k_points", retriever_config.get("top_k_points")),
+        32,
+    )
+    save_freq = _as_int(config.get("save_freq", config.get("checkpoint_interval")), 500)
+    total_examples = max(0, num_graphs) * max(0, episodes_per_case)
+    steps_per_epoch = (
+        (total_examples + train_batch_size - 1) // train_batch_size
+        if train_batch_size > 0
+        else 0
+    )
+    total_optimizer_steps = steps_per_epoch * max(0, num_epochs)
+    sampled_rollouts_per_step = train_batch_size * rollout_n
+
+    logger.info(
+        "Training scale: examples=%s steps_per_epoch=%s total_steps=%s sampled_rollouts_per_step=%s",
+        total_examples,
+        steps_per_epoch,
+        total_optimizer_steps,
+        sampled_rollouts_per_step,
+    )
+
+    warnings = []
+    if num_epochs < 6:
+        warnings.append(f"num_epochs={num_epochs} is closer to a smoke run; use >=6 for stable online memory training.")
+    if train_batch_size < 8:
+        warnings.append(f"train_batch_size={train_batch_size} is small; use >=8, preferably 16 on A6000/Qwen3-0.6B.")
+    if ppo_mini_batch_size < 4:
+        warnings.append(f"ppo_mini_batch_size={ppo_mini_batch_size} is small; use >=4, preferably 8.")
+    if rollout_n < 8:
+        warnings.append(f"rollout_n={rollout_n} weakens GRPO selection; use >=8.")
+    if episodes_per_case < 500:
+        warnings.append(f"episodes_per_case={episodes_per_case} gives shallow M_t exploration; use >=500, preferably 1000.")
+    if regression_sample_size < 8:
+        warnings.append(f"regression_sample_size={regression_sample_size} may miss forgetting; use >=8.")
+    if top_k < 8:
+        warnings.append(f"top_k={top_k} may under-retrieve facts; use >=8 with dense_structured retrieval.")
+    if top_k_points < 24:
+        warnings.append(f"top_k_points={top_k_points} is low for flattened fact retrieval; use >=24.")
+    if max_response_length < 768:
+        warnings.append(f"max_response_length={max_response_length} may truncate structured JSON; use >=768.")
+    if save_freq > 0 and save_freq < 250:
+        warnings.append(f"save_freq={save_freq} is very frequent for formal training; use >=250 unless debugging.")
+    retriever_type = str(retriever_config.get("type", "bm25")).casefold()
+    if retriever_type in {"bm25", "frozen_bm25", "frozen-bm25"}:
+        warnings.append("retriever is BM25; formal runs should use dense_structured/contriever.")
+    if retriever_type not in {"bm25", "frozen_bm25", "frozen-bm25"} and not retriever_config.get("require_model"):
+        warnings.append("retriever.require_model=false allows hash fallback; set RETRIEVER_REQUIRE_MODEL=true for formal runs.")
+    if total_optimizer_steps < 1000:
+        warnings.append(
+            f"total_optimizer_steps={total_optimizer_steps} is short; increase episodes_per_case, num_epochs, or graph count."
+        )
+
+    for message in warnings:
+        logger.warning("Training scale check: %s", message)
+
+
+def _as_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Online GRPO training for memory refactoring"
@@ -270,6 +348,7 @@ def main():
     parser.add_argument("--ppo-mini-batch-size", type=int, help="PPO mini-batch size")
     parser.add_argument("--total-epochs", type=int, help="Total training epochs")
     parser.add_argument("--save-freq", type=int, help="verl model checkpoint save frequency")
+    parser.add_argument("--test-freq", type=int, help="verl validation frequency")
 
     # Environment parameters
     parser.add_argument("--tau", type=float, help="Add/merge similarity threshold")
@@ -339,14 +418,15 @@ def main():
     logger.info(f"Model path: {args.model_path}")
     logger.info(f"Number of graphs: {len(graph_files)}")
     logger.info(f"Output directory: {args.output_dir}")
-    logger.info(f"Rollout N: {config.get('rollout_n', 4)}")
-    logger.info(f"Batch size: {config.get('train_batch_size', 4)}")
-    logger.info(f"Episodes per case: {config.get('episodes_per_case', 100)}")
+    logger.info(f"Rollout N: {config.get('rollout_n', 8)}")
+    logger.info(f"Batch size: {config.get('train_batch_size', 16)}")
+    logger.info(f"Episodes per case: {config.get('episodes_per_case', 1000)}")
     logger.info(f"Retriever: {config.get('retriever_type', config.get('retriever', {}).get('type', 'bm25'))}")
     logger.info(f"Reward mode: {config.get('reward_config', {}).get('mode', 'semantic_complete')}")
     logger.info(f"Seed: {config.get('seed', 42)}")
     logger.info("=" * 60)
 
+    validate_training_scale(config, len(graph_files))
     preflight_retriever(config)
 
     # Create output directory

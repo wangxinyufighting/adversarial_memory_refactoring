@@ -179,26 +179,28 @@ reward_config:
 `configs/online_grpo.yaml` 不再是 smoke-test 级别：
 
 ```yaml
-num_epochs: 6
-train_batch_size: 8
-ppo_mini_batch_size: 4
+num_epochs: 8
+train_batch_size: 16
+ppo_mini_batch_size: 8
 rollout_n: 8
-episodes_per_case: 500
+episodes_per_case: 1000
 top_k: 8
-top_k_points: 24
-regression_sample_size: 8
+top_k_points: 32
+regression_sample_size: 12
 commit_threshold: 1.0
-max_response_length: 768
-save_freq: 250
+max_response_length: 1024
+save_freq: 500
 ```
 
 这些参数更适合正式训练：
 
 - `rollout_n=8` 提高 GRPO group 内候选质量。
-- `regression_sample_size=8` 降低 merge 时遗忘旧 memory 的概率。
-- `top_k=8/top_k_points=24` 适配 fact-level dense retrieval。
+- `train_batch_size=16/ppo_mini_batch_size=8` 避免 4-sample smoke run 的高方差。
+- `episodes_per_case=1000` 让每个 case 有更充分的 `M_t` 轨迹探索。
+- `regression_sample_size=12` 降低 merge 时遗忘旧 memory 的概率。
+- `top_k=8/top_k_points=32` 适配 fact-level dense retrieval。
 - `commit_threshold=1.0` 避免 completeness 边缘通过的 rollout 被写入 `M_t`。
-- `max_response_length=768` 给 structured memory JSON 留足空间。
+- `max_response_length=1024` 给 structured memory JSON 留足空间。
 
 ## CLI / Script 新增参数
 
