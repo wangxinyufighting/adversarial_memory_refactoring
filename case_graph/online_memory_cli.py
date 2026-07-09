@@ -10,6 +10,7 @@ from typing import List
 import yaml
 
 from .online_memory_dataset import OnlineMemoryDataset
+from .retriever import MemoryChunk, MemoryStore, build_memory_retriever, retriever_config_from_mapping
 
 logging.basicConfig(
     level=logging.INFO,
@@ -161,6 +162,8 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
     if args.reward_mode is not None:
         base_config["reward_config"] = dict(base_config.get("reward_config", {}))
         base_config["reward_config"]["mode"] = args.reward_mode
+    if args.skip_retriever_preflight:
+        base_config["retriever_preflight"] = False
     if args.attacker_llm is not None:
         base_config["attacker_llm"] = args.attacker_llm
     if args.attacker_api_base is not None:
@@ -173,6 +176,53 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["memory_trajectory_enabled"] = False
 
     return base_config
+
+
+def preflight_retriever(config: dict) -> None:
+    """Load the configured retriever once before Ray starts reward workers."""
+    if config.get("retriever_preflight", True) is False:
+        logger.info("Skipping retriever preflight.")
+        return
+    retriever_config = retriever_config_from_mapping(config)
+    retriever_type = str(retriever_config.get("type", "bm25")).casefold()
+    if retriever_type in {"bm25", "frozen_bm25", "frozen-bm25"}:
+        return
+
+    logger.info(
+        "Preflighting retriever: type=%s model=%s device=%s require_model=%s",
+        retriever_config.get("type"),
+        retriever_config.get("model_name"),
+        retriever_config.get("device"),
+        retriever_config.get("require_model"),
+    )
+    store = MemoryStore(
+        [
+            MemoryChunk(
+                "preflight",
+                "The user admired Jose Altuve after watching the Astros.",
+                metadata={
+                    "facts": ["The user admired Jose Altuve after watching the Astros."],
+                    "keywords": ["Jose Altuve", "Astros"],
+                    "summary": "Baseball preference memory.",
+                },
+            )
+        ]
+    )
+    try:
+        hits = build_memory_retriever(retriever_config, store).retrieve(
+            "Which Astros player did the user admire?",
+            top_k=1,
+        )
+    except Exception as exc:
+        raise SystemExit(
+            "Retriever preflight failed before starting Ray. "
+            "This usually means RETRIEVER_MODEL_NAME does not point to a complete "
+            "HuggingFace checkpoint, or the reward workers cannot load that model. "
+            f"Config: {retriever_config}. Error: {exc}"
+        ) from exc
+    if not hits:
+        raise SystemExit(f"Retriever preflight returned no hits. Config: {retriever_config}")
+    logger.info("Retriever preflight succeeded: top_hit=%s score=%.4f", hits[0].memory_id, hits[0].score)
 
 
 def main():
@@ -231,6 +281,7 @@ def main():
     parser.add_argument("--retriever-device", help="Retriever device, e.g. cpu or cuda:0")
     parser.add_argument("--retriever-cache-dir", help="Retriever model cache directory")
     parser.add_argument("--retriever-require-model", action="store_true", help="Fail instead of falling back to hash retrieval")
+    parser.add_argument("--skip-retriever-preflight", action="store_true", help="Skip loading the configured retriever before Ray starts")
     parser.add_argument("--reward-mode", choices=["semantic_complete", "evaluation_aligned"], help="Reward evaluator mode")
     parser.add_argument("--memory-trajectory-dir", help="Directory name under output-dir for per-step M_t snapshots")
     parser.add_argument(
@@ -289,6 +340,8 @@ def main():
     logger.info(f"Reward mode: {config.get('reward_config', {}).get('mode', 'semantic_complete')}")
     logger.info(f"Seed: {config.get('seed', 42)}")
     logger.info("=" * 60)
+
+    preflight_retriever(config)
 
     # Create output directory
     output_path = Path(args.output_dir)

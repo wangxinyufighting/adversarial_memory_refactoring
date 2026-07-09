@@ -48,6 +48,7 @@ args=(
 [[ -n "${RETRIEVER_DEVICE:-}" ]] && args+=(--retriever-device "${RETRIEVER_DEVICE}")
 [[ -n "${RETRIEVER_CACHE_DIR:-}" ]] && args+=(--retriever-cache-dir "${RETRIEVER_CACHE_DIR}")
 [[ -n "${RETRIEVER_REQUIRE_MODEL:-}" ]] && args+=(--retriever-require-model)
+[[ -n "${SKIP_RETRIEVER_PREFLIGHT:-}" ]] && args+=(--skip-retriever-preflight)
 [[ -n "${REWARD_MODE:-}" ]] && args+=(--reward-mode "${REWARD_MODE}")
 [[ -n "${MEMORY_TRAJECTORY_DIR:-}" ]] && args+=(--memory-trajectory-dir "${MEMORY_TRAJECTORY_DIR}")
 [[ -n "${DISABLE_MEMORY_TRAJECTORY:-}" ]] && args+=(--disable-memory-trajectory)

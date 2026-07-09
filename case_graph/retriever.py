@@ -512,19 +512,23 @@ class _HFEmbeddingEncoder:
             cache_dir=cache_dir,
             local_files_only=local_files_only,
         )
-        meta_parameters = [
-            name
-            for name, parameter in self.model.named_parameters()
-            if getattr(parameter, "is_meta", False)
-        ]
+        meta_parameters = _meta_parameter_names(self.model)
+        if meta_parameters:
+            self.model = self._materialize_meta_model(
+                self.model,
+                model_name=model_name,
+                meta_parameters=meta_parameters,
+            )
+            meta_parameters = _meta_parameter_names(self.model)
         if meta_parameters:
             preview = ", ".join(meta_parameters[:5])
             raise RuntimeError(
                 "Embedding model loaded with meta tensors instead of real weights "
                 f"({len(meta_parameters)} parameters; examples: {preview}). "
-                "Check that the retriever model path contains a complete HuggingFace "
-                "checkpoint with weight files, or use RETRIEVER_EMBEDDING_MODEL=hash "
-                "for a no-model debug run."
+                f"model_name={model_name!r}. {_local_model_status(model_name)} "
+                "Use a complete HuggingFace checkpoint with real weight files, or set "
+                "RETRIEVER_EMBEDDING_MODEL=hash RETRIEVER_REQUIRE_MODEL=false for a "
+                "no-model debug run."
             )
         self.model.to(self.device)
         self.model.eval()
@@ -565,6 +569,42 @@ class _HFEmbeddingEncoder:
                     torch.set_default_device(previous_default_device)
                 except Exception:
                     pass
+
+    def _materialize_meta_model(self, model: Any, model_name: str, meta_parameters: List[str]):
+        model_path = Path(str(model_name))
+        if not model_path.exists() or not model_path.is_dir() or not hasattr(model, "to_empty"):
+            return model
+
+        weight_paths = _local_weight_paths(model_path)
+        if not weight_paths:
+            return model
+
+        logger.warning(
+            "Embedding model %s was initialized with %d meta parameters; "
+            "materializing on CPU and loading local weights manually.",
+            model_name,
+            len(meta_parameters),
+        )
+        model.to_empty(device="cpu")
+        state_dict = _load_local_state_dict(weight_paths, self.torch)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing and unexpected:
+            repaired = _strip_state_dict_prefixes(state_dict)
+            if repaired is not state_dict:
+                missing, unexpected = model.load_state_dict(repaired, strict=False)
+        if missing:
+            logger.warning(
+                "Retriever model loaded with %d missing weight keys; examples: %s",
+                len(missing),
+                ", ".join(str(item) for item in missing[:5]),
+            )
+        if unexpected:
+            logger.info(
+                "Retriever model ignored %d unexpected weight keys; examples: %s",
+                len(unexpected),
+                ", ".join(str(item) for item in unexpected[:5]),
+            )
+        return model
 
     def encode(self, texts: List[str]) -> List[List[float]]:
         if not texts:
@@ -646,3 +686,104 @@ def _normalize_vector(vector: List[float]) -> List[float]:
 
 def _dot(left: Sequence[float], right: Sequence[float]) -> float:
     return float(sum(a * b for a, b in zip(left, right)))
+
+
+def _meta_parameter_names(model: Any) -> List[str]:
+    return [
+        name
+        for name, parameter in model.named_parameters()
+        if getattr(parameter, "is_meta", False)
+    ]
+
+
+def _local_weight_paths(model_path: Path) -> List[Path]:
+    index_paths = [
+        model_path / "pytorch_model.bin.index.json",
+        model_path / "model.safetensors.index.json",
+    ]
+    for index_path in index_paths:
+        if index_path.exists():
+            payload = json.loads(index_path.read_text(encoding="utf-8"))
+            names = sorted(set(str(item) for item in payload.get("weight_map", {}).values()))
+            return [model_path / name for name in names if (model_path / name).exists()]
+
+    preferred = [
+        model_path / "model.safetensors",
+        model_path / "pytorch_model.bin",
+    ]
+    for path in preferred:
+        if path.exists():
+            return [path]
+
+    return sorted(
+        path
+        for path in model_path.iterdir()
+        if path.name.endswith((".bin", ".safetensors"))
+        and not any(skip in path.name for skip in ("optimizer", "scheduler", "training_args"))
+    )
+
+
+def _load_local_state_dict(weight_paths: List[Path], torch_module: Any) -> Dict[str, Any]:
+    state_dict: Dict[str, Any] = {}
+    for path in weight_paths:
+        if path.suffix == ".safetensors":
+            try:
+                from safetensors.torch import load_file
+            except ImportError as exc:
+                raise RuntimeError(
+                    f"Cannot load safetensors retriever weights from {path}: safetensors is not installed."
+                ) from exc
+            loaded = load_file(str(path), device="cpu")
+        else:
+            loaded = torch_module.load(str(path), map_location="cpu")
+        if isinstance(loaded, dict) and "state_dict" in loaded and isinstance(loaded["state_dict"], dict):
+            loaded = loaded["state_dict"]
+        elif isinstance(loaded, dict) and "model" in loaded and isinstance(loaded["model"], dict):
+            loaded = loaded["model"]
+        if not isinstance(loaded, dict):
+            raise RuntimeError(f"Retriever weight file {path} did not contain a state dict.")
+        state_dict.update(loaded)
+    return state_dict
+
+
+def _strip_state_dict_prefixes(state_dict: Dict[str, Any]) -> Dict[str, Any]:
+    prefixes = ("module.", "model.", "encoder.")
+    for prefix in prefixes:
+        matching = [key for key in state_dict if str(key).startswith(prefix)]
+        if matching and len(matching) >= max(1, len(state_dict) // 2):
+            return {
+                str(key)[len(prefix) :] if str(key).startswith(prefix) else str(key): value
+                for key, value in state_dict.items()
+            }
+    return state_dict
+
+
+def _local_model_status(model_name: str) -> str:
+    path = Path(str(model_name))
+    if not path.exists():
+        return "The path does not exist locally."
+    if not path.is_dir():
+        return "The path exists but is not a directory."
+    names = {item.name for item in path.iterdir()}
+    config_ok = "config.json" in names
+    tokenizer_ok = bool(
+        {"tokenizer.json", "tokenizer_config.json", "vocab.txt", "sentencepiece.bpe.model"} & names
+    )
+    weight_files = [
+        name
+        for name in names
+        if name.endswith((".bin", ".safetensors", ".pt", ".pth"))
+        or name == "pytorch_model.bin.index.json"
+        or name == "model.safetensors.index.json"
+    ]
+    missing = []
+    if not config_ok:
+        missing.append("config.json")
+    if not tokenizer_ok:
+        missing.append("tokenizer files")
+    if not weight_files:
+        missing.append("weight files (*.bin or *.safetensors)")
+    if missing:
+        preview = ", ".join(sorted(names)[:10])
+        return f"Local path is missing {', '.join(missing)}. Directory preview: [{preview}]"
+    return f"Local path appears to contain config/tokenizer/weights: {path}"
