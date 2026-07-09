@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
@@ -17,13 +18,17 @@ from case_graph.grpo_adapter import SYSTEM_PROMPT, build_user_prompt
 from case_graph.llm import OpenAIChatClient
 from case_graph.models import EVALUATOR_METADATA_SOURCE
 from case_graph.pipeline import AlgorithmConfig, prepare_refactor_state
+from case_graph.memory_evaluator import evaluate_refactor_proposal
 from case_graph.refactoring import (
     ADD_ACTION,
     MERGE_ACTION,
     HighPriorityBuffer,
+    RefactorActionDecision,
     RefactorProposal,
-    RegressionQuestion,
-    run_sandbox_refactor,
+    RewardWeights,
+    SandboxResult,
+    build_sandbox_memory,
+    compute_reward,
     settle_grpo_rollouts,
 )
 from case_graph.retriever import MemoryChunk, MemoryStore
@@ -46,14 +51,16 @@ class DefenderClient(Protocol):
 class MemoryConstructionConfig:
     """Runtime settings for target-free evaluation memory construction."""
 
-    tau: float = 0.7
-    top_k: int = 5
+    tau: float = 0.55
+    top_k: int = 8
+    top_k_points: int = 24
     min_score: float = 0.0
-    regression_sample_size: int = 3
+    regression_sample_size: int = 8
     episodes_per_case: int = 100
     proposal_count: int = 1
     commit_threshold: float = 0.0
     seed: int = 42
+    force_add: bool = False
     routing_max_steps: int = 3
     routing_min_nodes: int = 1
     routing_attempts: int = 8
@@ -61,12 +68,16 @@ class MemoryConstructionConfig:
     attacker_max_output_tokens: int = 700
     memory_save_interval: int = 0
     max_attack_failures: int = 20
+    progress_log_interval: int = 1
+    retriever_config: Dict[str, Any] = field(default_factory=dict)
+    reward_config: Dict[str, Any] = field(default_factory=dict)
     exp_name: str = "eval_memory_construction"
 
     def algorithm_config(self, memory_archive_dir: Optional[str] = None) -> AlgorithmConfig:
         return AlgorithmConfig(
             tau=self.tau,
             top_k=self.top_k,
+            top_k_points=self.top_k_points,
             min_score=self.min_score,
             regression_sample_size=self.regression_sample_size,
             proposal_count=self.proposal_count,
@@ -74,6 +85,8 @@ class MemoryConstructionConfig:
             commit_threshold=self.commit_threshold,
             memory_archive_dir=memory_archive_dir,
             exp_name=self.exp_name,
+            retriever_config=dict(self.retriever_config or {}),
+            reward_config=dict(self.reward_config or {}),
         )
 
 
@@ -136,6 +149,14 @@ class DefenderCheckpointPolicy:
         self.max_output_tokens = max_output_tokens
 
     def propose_from_state(self, state: Dict[str, Any]) -> RefactorProposal:
+        started_at = time.monotonic()
+        logger.info(
+            "Calling defender policy: case=%s step=%s action=%s selected=%s",
+            state.get("case_id", ""),
+            state.get("step", ""),
+            state.get("action", ""),
+            state.get("selected_memory_ids", []),
+        )
         response = self.client.complete_json(
             system_prompt=SYSTEM_PROMPT,
             user_prompt=build_user_prompt(state),
@@ -148,6 +169,13 @@ class DefenderCheckpointPolicy:
         ]
         if not chunks:
             raise ValueError(f"Defender response contains no chunks: {response}")
+        logger.info(
+            "Defender policy returned: case=%s step=%s chunks=%d elapsed=%.1fs",
+            state.get("case_id", ""),
+            state.get("step", ""),
+            len(chunks),
+            time.monotonic() - started_at,
+        )
 
         source_ids = _source_ids_from_state(state)
         for chunk in chunks:
@@ -285,10 +313,29 @@ class EvaluationMemoryConstructor:
         algorithm_config = self.config.algorithm_config(memory_archive_dir=memory_archive_dir)
         traces: List[ConstructionStepTrace] = []
         attack_failures = 0
+        logger.info(
+            "Starting case %s: episodes=%d initial_memory_chunks=%d",
+            case_id,
+            self.config.episodes_per_case,
+            len(memory_store.chunks),
+        )
 
         for episode in range(max(0, self.config.episodes_per_case)):
             seed = self.config.seed + episode * 1009
             route_payload: Dict[str, Any] = {}
+            should_log = _should_log_progress(
+                episode=episode,
+                total=self.config.episodes_per_case,
+                interval=self.config.progress_log_interval,
+            )
+            if should_log:
+                logger.info(
+                    "Case %s episode %d/%d begin: memory_chunks=%d",
+                    case_id,
+                    episode + 1,
+                    self.config.episodes_per_case,
+                    len(memory_store.chunks),
+                )
             try:
                 route = routing_policy.select_route(safe_graph, seed=seed)
                 route_payload = route.to_dict()
@@ -353,31 +400,40 @@ class EvaluationMemoryConstructor:
                         route=attack_dict.get("route", {}),
                     )
                 )
+                if should_log:
+                    logger.info(
+                        "Case %s episode %d/%d initial defense success: memory_chunks=%d",
+                        case_id,
+                        episode + 1,
+                        self.config.episodes_per_case,
+                        len(memory_store.chunks),
+                    )
                 continue
 
+            if self.config.force_add and state["action"] != ADD_ACTION:
+                state = _force_add_state(state, tau=self.config.tau)
+
             sandbox_results = []
-            regression_questions = [
-                RegressionQuestion(
-                    question=item["question"],
-                    answer=item["answer"],
-                    source_memory_ids=item.get("source_memory_ids", []),
-                )
-                for item in state.get("regression_questions", [])
-            ]
             for rollout_index in range(max(1, self.config.proposal_count)):
                 try:
                     proposal = self.defender_policy.propose_from_state(state)
+                    if should_log:
+                        logger.info(
+                            "Running sandbox: case=%s episode=%d/%d rollout=%d/%d",
+                            case_id,
+                            episode + 1,
+                            self.config.episodes_per_case,
+                            rollout_index + 1,
+                            max(1, self.config.proposal_count),
+                        )
                     sandbox_results.append(
-                        run_sandbox_refactor(
+                        _run_evaluation_aligned_sandbox(
+                            state=state,
                             memory_store=memory_store,
                             proposal=proposal,
-                            current_question=state["question"],
-                            current_answer=state["answer"],
-                            regression_questions=regression_questions,
                             answer_agent=self.answer_agent,
                             judge=self.judge,
-                            top_k=self.config.top_k,
-                            min_score=self.config.min_score,
+                            reward_config=self.config.reward_config,
                         )
                     )
                 except Exception as exc:
@@ -409,6 +465,21 @@ class EvaluationMemoryConstructor:
                 commit_threshold=self.config.commit_threshold,
             )
             memory_store = settlement.memory_store
+            if should_log:
+                selected_reward = (
+                    settlement.selected_result.reward.reward
+                    if settlement.selected_result is not None
+                    else (max(settlement.all_rewards) if settlement.all_rewards else 0.0)
+                )
+                logger.info(
+                    "Case %s episode %d/%d %s: reward=%.3f memory_chunks=%d",
+                    case_id,
+                    episode + 1,
+                    self.config.episodes_per_case,
+                    "committed" if settlement.committed else "rolled back",
+                    float(selected_reward),
+                    len(memory_store.chunks),
+                )
             traces.append(
                 ConstructionStepTrace(
                     case_id=case_id,
@@ -432,6 +503,36 @@ class EvaluationMemoryConstructor:
         )
 
 
+def _run_evaluation_aligned_sandbox(
+    state: Dict[str, Any],
+    memory_store: MemoryStore,
+    proposal: RefactorProposal,
+    answer_agent: RetrievedMemoryAnswerAgent,
+    judge: AnswerEquivalenceJudge,
+    reward_config: Optional[Dict[str, Any]] = None,
+) -> SandboxResult:
+    temp_memory = build_sandbox_memory(
+        memory_store,
+        proposal,
+        current_question=str(state.get("question", "")),
+    )
+    evaluation = evaluate_refactor_proposal(
+        temp_memory=temp_memory,
+        proposal=proposal,
+        state=state,
+        answer_agent=answer_agent,
+        judge=judge,
+    )
+    weights = RewardWeights.from_config((reward_config or {}).get("weights", {}))
+    reward = compute_reward(proposal, evaluation, weights)
+    return SandboxResult(
+        proposal=proposal,
+        temp_memory=temp_memory,
+        evaluation=evaluation,
+        reward=reward,
+    )
+
+
 def construct_memories_for_graphs(
     graphs: List[Dict[str, Any]],
     constructor: EvaluationMemoryConstructor,
@@ -449,8 +550,9 @@ def construct_memories_for_graphs(
         trace_dir.mkdir(parents=True, exist_ok=True)
 
     case_summaries = []
-    for graph in graphs:
+    for index, graph in enumerate(graphs, start=1):
         case_id = str(graph.get("case_id", "unknown"))
+        logger.info("Constructing memory for case %d/%d: %s", index, len(graphs), case_id)
         initial_memory = _load_initial_memory(case_id, initial_memory_dir)
         result = constructor.construct_case(
             graph=graph,
@@ -465,7 +567,9 @@ def construct_memories_for_graphs(
                 json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-        case_summaries.append(summarize_case_traces(result.traces, result.memory_store, case_id=case_id))
+        case_summary = summarize_case_traces(result.traces, result.memory_store, case_id=case_id)
+        case_summaries.append(case_summary)
+        logger.info("Finished case %s: %s", case_id, case_summary)
 
     summary = {
         "case_count": len(case_summaries),
@@ -521,6 +625,37 @@ def summarize_construction(case_summaries: List[Dict[str, Any]]) -> Dict[str, An
         "memory_chars",
     ]
     return {key: sum(int(item.get(key, 0)) for item in case_summaries) for key in keys}
+
+
+def _should_log_progress(episode: int, total: int, interval: int) -> bool:
+    if total <= 0:
+        return False
+    if episode == 0 or episode == total - 1:
+        return True
+    if interval <= 0:
+        return False
+    return (episode + 1) % interval == 0
+
+
+def _force_add_state(state: Dict[str, Any], tau: float) -> Dict[str, Any]:
+    """Coverage construction keeps memories independent instead of compressing them."""
+    original_decision = state.get("decision")
+    max_score = float(getattr(original_decision, "max_score", 0.0) or 0.0)
+    similarity_report = getattr(original_decision, "similarity_report", None)
+    forced = dict(state)
+    forced["action"] = ADD_ACTION
+    forced["selected_memory_ids"] = []
+    forced["regression_questions"] = []
+    forced["decision"] = RefactorActionDecision(
+        action=ADD_ACTION,
+        question=str(state.get("question", "")),
+        tau=tau,
+        max_score=max_score,
+        selected_memory_ids=[],
+        reason="Coverage mode forces add to preserve per-source memory coverage.",
+        similarity_report=similarity_report,
+    )
+    return forced
 
 
 def build_openai_client(

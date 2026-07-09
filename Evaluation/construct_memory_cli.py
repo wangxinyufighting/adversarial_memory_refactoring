@@ -15,6 +15,7 @@ from case_graph.attacker import FrozenLLMAttacker
 from case_graph.baseline import AnswerEquivalenceJudge
 from case_graph.defense import RetrievedMemoryAnswerAgent
 from case_graph.evaluation import graph_paths, load_graph
+from case_graph.retriever import retriever_config_from_mapping
 
 from .defender_server_manager import DefenderServerManager
 from .memory_construction import (
@@ -81,12 +82,22 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--episodes-per-case", type=int, default=100)
     parser.add_argument("--proposal-count", type=int, default=1)
-    parser.add_argument("--tau", type=float, default=0.7)
-    parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--tau", type=float, default=0.55)
+    parser.add_argument("--top-k", type=int, default=8)
+    parser.add_argument("--top-k-points", type=int, default=24)
     parser.add_argument("--min-score", type=float, default=0.0)
-    parser.add_argument("--regression-sample-size", type=int, default=3)
-    parser.add_argument("--commit-threshold", type=float, default=0.0)
+    parser.add_argument("--regression-sample-size", type=int, default=8)
+    parser.add_argument("--commit-threshold", type=float, default=1.0)
+    parser.add_argument("--retriever-type", default="dense_structured")
+    parser.add_argument("--retriever-model-name", default="facebook/contriever")
+    parser.add_argument("--retriever-embedding-model", default="contriever")
+    parser.add_argument("--retriever-retrieval-mode", default="flatten")
+    parser.add_argument("--retriever-device")
+    parser.add_argument("--retriever-cache-dir")
+    parser.add_argument("--retriever-require-model", action="store_true")
+    parser.add_argument("--reward-mode", default="semantic_complete", choices=["semantic_complete", "evaluation_aligned"])
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--progress-log-interval", type=int, default=1)
     parser.add_argument("--routing-max-steps", type=int, default=3)
     parser.add_argument("--routing-min-nodes", type=int, default=1)
     parser.add_argument("--routing-attempts", type=int, default=8)
@@ -117,18 +128,34 @@ def main() -> None:
         config = MemoryConstructionConfig(
             tau=args.tau,
             top_k=args.top_k,
+            top_k_points=args.top_k_points,
             min_score=args.min_score,
             regression_sample_size=args.regression_sample_size,
             episodes_per_case=args.episodes_per_case,
             proposal_count=args.proposal_count,
             commit_threshold=args.commit_threshold,
             seed=args.seed,
+            force_add=args.attacker_mode == "coverage",
+            progress_log_interval=args.progress_log_interval,
             routing_max_steps=args.routing_max_steps,
             routing_min_nodes=args.routing_min_nodes,
             routing_attempts=args.routing_attempts,
             max_attack_failures=args.max_attack_failures,
             defender_max_output_tokens=args.defender_max_output_tokens,
             attacker_max_output_tokens=args.attacker_max_output_tokens,
+            retriever_config=retriever_config_from_mapping(
+                {
+                    "retriever_type": args.retriever_type,
+                    "retriever_model_name": args.retriever_model_name,
+                    "retriever_embedding_model": args.retriever_embedding_model,
+                    "retriever_retrieval_mode": args.retriever_retrieval_mode,
+                    "retriever_top_k_points": args.top_k_points,
+                    "retriever_device": args.retriever_device,
+                    "retriever_cache_dir": args.retriever_cache_dir,
+                    "retriever_require_model": args.retriever_require_model,
+                }
+            ),
+            reward_config={"mode": args.reward_mode},
             exp_name=args.exp_name,
         )
         defender_policy = DefenderCheckpointPolicy(
@@ -142,12 +169,7 @@ def main() -> None:
         )
         attacker = _build_attacker(args)
         answer_client = _build_answer_client(args, defender_api_base, defender_served_model)
-        judge_client = _optional_client(
-            model=args.judge_model,
-            api_base=args.judge_api_base,
-            api_key=args.judge_api_key,
-            timeout=args.judge_timeout,
-        )
+        judge_client = _build_judge_client(args, defender_api_base, defender_served_model)
         use_llm_judge = _use_llm_judge(args, judge_client)
         answer_agent = RetrievedMemoryAnswerAgent(
             client=answer_client,
@@ -250,13 +272,35 @@ def _build_answer_client(
 def _use_llm_judge(args: argparse.Namespace, judge_client) -> bool:
     if args.skip_llm_judge:
         return False
-    if judge_client is not None or _env_llm_configured():
-        return True
-    logger.warning(
-        "No judge API or global LLM env configured; using string-match answer judging. "
-        "Set JUDGE_API_BASE/JUDGE_MODEL for semantic judging."
+    return judge_client is not None or _env_llm_configured()
+
+
+def _build_judge_client(
+    args: argparse.Namespace,
+    defender_api_base: str,
+    defender_served_model: str,
+):
+    if args.skip_llm_judge:
+        return None
+    client = _optional_client(
+        model=args.judge_model,
+        api_base=args.judge_api_base,
+        api_key=args.judge_api_key,
+        timeout=args.judge_timeout,
     )
-    return False
+    if client is not None or _env_llm_configured():
+        return client
+
+    logger.warning(
+        "No judge API or global LLM env configured; reusing the defender endpoint for "
+        "semantic answer judging. Set SKIP_LLM_JUDGE=true to force string-match judging."
+    )
+    return build_openai_client(
+        model=defender_served_model,
+        api_base=defender_api_base,
+        api_key=args.defender_api_key,
+        timeout=args.defender_timeout,
+    )
 
 
 def _env_llm_configured() -> bool:

@@ -20,7 +20,7 @@ from .refactoring import (
     run_sandbox_refactor,
     settle_grpo_rollouts,
 )
-from .retriever import MemoryStore
+from .retriever import MemoryStore, build_memory_retriever
 from .verifier import GoldenFactVerifier
 
 
@@ -38,6 +38,7 @@ class MemoryRefactoringPolicy(Protocol):
 class AlgorithmConfig:
     tau: float
     top_k: int = 5
+    top_k_points: int = 24
     min_score: float = 0.0
     regression_sample_size: int = 3
     proposal_count: int = 1
@@ -45,6 +46,8 @@ class AlgorithmConfig:
     commit_threshold: float = 0.0
     memory_archive_dir: Optional[str] = None
     exp_name: str = "default"
+    retriever_config: Dict[str, Any] = field(default_factory=dict)
+    reward_config: Dict[str, Any] = field(default_factory=dict)
 
 
 def prepare_refactor_state(
@@ -69,6 +72,8 @@ def prepare_refactor_state(
     if not question or not answer:
         raise ValueError("Each attack must contain question and answer.")
 
+    retriever_config = _normalized_retriever_config(config)
+
     # Initial defense check
     initial = run_initial_defense(
         question=question,
@@ -77,6 +82,7 @@ def prepare_refactor_state(
         answer_agent=answer_agent,
         judge=judge,
         success_pool=success_pool,
+        retriever=build_memory_retriever(retriever_config, memory_store),
         top_k=config.top_k,
         min_score=config.min_score,
     )
@@ -85,7 +91,11 @@ def prepare_refactor_state(
         return None  # No refactor needed
 
     # Decide action (add/merge)
-    decision = SimilarityActionRouter(config.tau, config.top_k).choose_action(
+    decision = SimilarityActionRouter(
+        config.tau,
+        config.top_k,
+        retriever_config=retriever_config,
+    ).choose_action(
         question=question,
         memory_store=memory_store,
     )
@@ -111,6 +121,9 @@ def prepare_refactor_state(
         "selected_memory_ids": decision.selected_memory_ids,
         "regression_questions": [r.to_dict() for r in regression_questions],
         "top_k": config.top_k,
+        "top_k_points": config.top_k_points,
+        "retriever_config": retriever_config,
+        "reward_config": dict(config.reward_config or {}),
         "decision": decision,
         "initial_defense": initial.to_dict(),
     }
@@ -337,9 +350,17 @@ class MemoryRefactoringPipeline:
                     judge=self.judge,
                     top_k=self.config.top_k,
                     min_score=self.config.min_score,
+                    retriever_config=_normalized_retriever_config(self.config),
                 )
             )
         return results
+
+
+def _normalized_retriever_config(config: AlgorithmConfig) -> Dict[str, Any]:
+    retriever_config = dict(config.retriever_config or {})
+    if config.top_k_points and "top_k_points" not in retriever_config:
+        retriever_config["top_k_points"] = config.top_k_points
+    return retriever_config
 
 
 def load_attacks(path: str | Path) -> List[Dict[str, Any]]:

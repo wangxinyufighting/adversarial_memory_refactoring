@@ -113,6 +113,11 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["tau"] = args.tau
     if args.top_k is not None:
         base_config["top_k"] = args.top_k
+    if args.top_k_points is not None:
+        base_config["top_k_points"] = args.top_k_points
+        base_config["retriever_top_k_points"] = args.top_k_points
+    if args.regression_sample_size is not None:
+        base_config["regression_sample_size"] = args.regression_sample_size
     if args.episodes_per_case is not None:
         base_config["episodes_per_case"] = args.episodes_per_case
     if args.seed is not None:
@@ -139,6 +144,23 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["experiment_name"] = args.experiment_name
     if args.commit_threshold is not None:
         base_config["commit_threshold"] = args.commit_threshold
+    if args.retriever_type is not None:
+        base_config["retriever_type"] = args.retriever_type
+    if args.retriever_model_name is not None:
+        base_config["retriever_model_name"] = args.retriever_model_name
+    if args.retriever_embedding_model is not None:
+        base_config["retriever_embedding_model"] = args.retriever_embedding_model
+    if args.retriever_retrieval_mode is not None:
+        base_config["retriever_retrieval_mode"] = args.retriever_retrieval_mode
+    if args.retriever_device is not None:
+        base_config["retriever_device"] = args.retriever_device
+    if args.retriever_cache_dir is not None:
+        base_config["retriever_cache_dir"] = args.retriever_cache_dir
+    if args.retriever_require_model:
+        base_config["retriever_require_model"] = True
+    if args.reward_mode is not None:
+        base_config["reward_config"] = dict(base_config.get("reward_config", {}))
+        base_config["reward_config"]["mode"] = args.reward_mode
     if args.attacker_llm is not None:
         base_config["attacker_llm"] = args.attacker_llm
     if args.attacker_api_base is not None:
@@ -197,9 +219,19 @@ def main():
     # Environment parameters
     parser.add_argument("--tau", type=float, help="Add/merge similarity threshold")
     parser.add_argument("--top-k", type=int, help="Top-K retrieval")
+    parser.add_argument("--top-k-points", type=int, help="Top-K dense retrieval points before chunk aggregation")
+    parser.add_argument("--regression-sample-size", type=int, help="Regression questions sampled for ADD actions")
     parser.add_argument("--episodes-per-case", type=int, help="Episodes per case graph")
     parser.add_argument("--seed", type=int, help="Random seed")
     parser.add_argument("--commit-threshold", type=float, help="Minimum reward required to commit")
+    parser.add_argument("--retriever-type", help="Retriever type, e.g. dense_structured or bm25")
+    parser.add_argument("--retriever-model-name", help="Dense retriever HF model name or local path")
+    parser.add_argument("--retriever-embedding-model", help="Dense retriever family, e.g. contriever or hash")
+    parser.add_argument("--retriever-retrieval-mode", help="Structured retrieval mode: flatten, merge, or separate")
+    parser.add_argument("--retriever-device", help="Retriever device, e.g. cpu or cuda:0")
+    parser.add_argument("--retriever-cache-dir", help="Retriever model cache directory")
+    parser.add_argument("--retriever-require-model", action="store_true", help="Fail instead of falling back to hash retrieval")
+    parser.add_argument("--reward-mode", choices=["semantic_complete", "evaluation_aligned"], help="Reward evaluator mode")
     parser.add_argument("--memory-trajectory-dir", help="Directory name under output-dir for per-step M_t snapshots")
     parser.add_argument(
         "--disable-memory-trajectory",
@@ -253,6 +285,8 @@ def main():
     logger.info(f"Rollout N: {config.get('rollout_n', 4)}")
     logger.info(f"Batch size: {config.get('train_batch_size', 4)}")
     logger.info(f"Episodes per case: {config.get('episodes_per_case', 100)}")
+    logger.info(f"Retriever: {config.get('retriever_type', config.get('retriever', {}).get('type', 'bm25'))}")
+    logger.info(f"Reward mode: {config.get('reward_config', {}).get('mode', 'semantic_complete')}")
     logger.info(f"Seed: {config.get('seed', 42)}")
     logger.info("=" * 60)
 

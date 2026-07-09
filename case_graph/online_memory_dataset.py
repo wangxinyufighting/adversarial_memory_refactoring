@@ -24,7 +24,7 @@ from .grpo_adapter import build_verl_row_online
 from .llm import OpenAIChatClient
 from .pipeline import AlgorithmConfig, prepare_refactor_state
 from .refactoring import HighPriorityBuffer, RefactorProposal, build_sandbox_memory
-from .retriever import MemoryChunk, MemoryStore
+from .retriever import MemoryChunk, MemoryStore, retriever_config_from_mapping
 from .routing import RandomWalkRoutingPolicy
 
 logger = logging.getLogger(__name__)
@@ -285,9 +285,12 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
             config=AlgorithmConfig(
                 tau=config.get("tau", 0.7),
                 top_k=config.get("top_k", 5),
+                top_k_points=config.get("top_k_points", config.get("retriever_top_k_points", 24)),
                 regression_sample_size=config.get("regression_sample_size", 3),
                 seed=config.get("seed", 42),
                 commit_threshold=config.get("commit_threshold", 0.0),
+                retriever_config=retriever_config_from_mapping(config),
+                reward_config=dict(config.get("reward", config.get("reward_config", {})) or {}),
             ),
             initial_memory_dir=initial_memory_dir,
         )
@@ -786,7 +789,16 @@ def _sum_reward(reward_row: Any) -> float:
     values = _to_list(reward_row)
     if not values:
         return 0.0
-    return float(sum(float(value) for value in values))
+    # The first reward channel is the scalar score returned by compute_score.
+    # Remaining channels are diagnostics; summing them changes the commit
+    # decision and can reward metadata instead of behavior.
+    first = float(values[0])
+    if first != 0.0 or len(values) == 1:
+        return first
+    nonzero = [float(value) for value in values if float(value) != 0.0]
+    if len(nonzero) == 1:
+        return nonzero[0]
+    return first
 
 
 def _case_id_from_uid(uid: str) -> str:

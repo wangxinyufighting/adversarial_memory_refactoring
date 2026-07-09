@@ -1,19 +1,53 @@
 # Online GRPO Training Configuration
 
 # Training
-num_epochs: 3
-train_batch_size: 4
-ppo_mini_batch_size: 2
-rollout_n: 4
+num_epochs: 6
+train_batch_size: 8
+ppo_mini_batch_size: 4
+rollout_n: 8
 temperature: 1.0
 seed: 42
 
 # Environment
-episodes_per_case: 100
-tau: 0.7  # Add/merge similarity threshold
-top_k: 5
-regression_sample_size: 3
-commit_threshold: 0.0  # Commit if best reward > 0
+episodes_per_case: 500
+tau: 0.55  # Dense add/merge similarity threshold
+top_k: 8
+top_k_points: 24
+regression_sample_size: 8
+commit_threshold: 1.0  # Commit only if completeness-gated reward is clearly positive
+
+# UnifiedMem-style non graph-based retrieval
+retriever:
+  type: dense_structured
+  embedding_model: contriever
+  model_name: facebook/contriever
+  retrieval_mode: flatten
+  top_k_points: 24
+  fields: ["facts", "summary", "keywords", "content"]
+  device: cpu
+  require_model: false  # If false, fallback to deterministic hashed dense retrieval when HF model is unavailable.
+
+# Reward shaping. Default avoids per-rollout LLM calls but checks relation/fact
+# completeness. Set mode: evaluation_aligned to call the retrieved-memory answer
+# agent + judge inside the reward worker.
+reward_config:
+  mode: semantic_complete
+  min_relation_overlap: 0.25
+  min_fact_overlap: 0.25
+  min_non_answer_tokens: 3
+  weights:
+    current_correct: 3.0
+    current_wrong: -3.0
+    completeness: 2.0
+    completeness_missing: 2.0
+    grounded: 1.0
+    regression_accuracy: 1.25
+    regression_failure: 2.0
+    chunk_count: 0.2
+    tokens_per_100: 0.15
+    duplicate: 0.5
+    answer_only: 1.5
+    raw_copy: 0.5
 
 # Attack generation
 routing_policy: "random_walk"
@@ -31,12 +65,12 @@ model_dtype: bfloat16  # Required for Flash Attention 2; use float16 if your GPU
 rollout_dtype: bfloat16
 attn_implementation: flash_attention_2
 max_prompt_length: 8192
-max_response_length: 512
+max_response_length: 768
 
 # Logging
 log_interval: 10
-save_freq: 100  # verl model checkpoint frequency
-checkpoint_interval: 100
+save_freq: 250  # verl model checkpoint frequency
+checkpoint_interval: 250
 memory_save_interval: 1
 memory_trajectory_enabled: true
 memory_trajectory_dir: "memory_trajectory"
@@ -52,7 +86,7 @@ verl:
   actor_rollout_ref:
     model:
       # model.path set via command line
-      ppo_mini_batch_size: 2
+      ppo_mini_batch_size: 4
       ppo_micro_batch_size_per_gpu: 1
       override_config:
         attn_implementation: flash_attention_2
@@ -69,7 +103,7 @@ verl:
       tensor_model_parallel_size: 1
       gpu_memory_utilization: 0.6
       log_prob_micro_batch_size_per_gpu: 1
-      n: 4  # Must match rollout_n above
+      n: 8  # Must match rollout_n above
       temperature: 1.0
 
     ref:
@@ -91,6 +125,6 @@ verl:
     logger: ["console", "wandb"]
     n_gpus_per_node: 1
     nnodes: 1
-    total_epochs: 3
-    save_freq: 100
-    test_freq: 100
+    total_epochs: 6
+    save_freq: 250
+    test_freq: 250

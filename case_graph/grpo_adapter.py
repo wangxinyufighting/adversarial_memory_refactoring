@@ -1,5 +1,4 @@
 import json
-import re
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -8,29 +7,31 @@ try:
         ADD_ACTION,
         MERGE_ACTION,
         RefactorProposal,
-        SandboxEvaluation,
-        QuestionTestResult,
         build_sandbox_memory,
         compute_reward,
+        RewardWeights,
     )
-    from .retriever import FrozenBM25Retriever, MemoryChunk, MemoryStore
+    from .memory_evaluator import evaluate_refactor_proposal
+    from .retriever import MemoryChunk, MemoryStore
 except ImportError:
     from case_graph.refactoring import (
         ADD_ACTION,
         MERGE_ACTION,
         RefactorProposal,
-        SandboxEvaluation,
-        QuestionTestResult,
         build_sandbox_memory,
         compute_reward,
+        RewardWeights,
     )
-    from case_graph.retriever import FrozenBM25Retriever, MemoryChunk, MemoryStore
+    from case_graph.memory_evaluator import evaluate_refactor_proposal
+    from case_graph.retriever import MemoryChunk, MemoryStore
 
 
 SYSTEM_PROMPT = (
     "You are the Memory Refactoring Policy. Generate structured memory chunks "
     "for the selected action. Return JSON only in this format: "
-    "{\"chunks\": [{\"memory_id\": \"...\", \"content\": \"...\"}]}."
+    "{\"chunks\": [{\"memory_id\": \"...\", \"content\": \"...\", "
+    "\"facts\": [\"...\"], \"keywords\": [\"...\"], \"summary\": \"...\", "
+    "\"source_ids\": [\"...\"]}]}."
 )
 
 REWARD_KEYS = (
@@ -41,9 +42,22 @@ REWARD_KEYS = (
     "failed_regression_count",
     "new_chunk_count",
     "current",
+    "regression_reward",
     "regression_failure",
     "chunk_count",
     "length",
+    "completeness",
+    "grounded",
+    "duplicate",
+    "answer_only",
+    "raw_copy",
+    "completeness_score",
+    "answer_present",
+    "relation_overlap",
+    "fact_overlap",
+    "grounding_score",
+    "duplicate_score",
+    "raw_copy_ratio",
 )
 
 
@@ -85,6 +99,9 @@ def build_verl_row_online(state: Dict[str, Any], tokenizer=None, index: int = 0)
         "current_memory": memory_chunks,
         "regression_questions": state.get("regression_questions", []),
         "top_k": state.get("top_k", 5),
+        "top_k_points": state.get("top_k_points", 24),
+        "retriever_config": state.get("retriever_config", {}),
+        "reward_config": state.get("reward_config", {}),
     }
 
     # Build the prompt messages
@@ -152,8 +169,14 @@ def compute_score(
         proposal,
         current_question=state["question"],
     )
-    evaluation = _evaluate_temp_memory(temp_memory, state)
-    reward = compute_reward(proposal, evaluation)
+    evaluation = evaluate_refactor_proposal(temp_memory, proposal, state)
+    reward_config = state.get("reward_config") or {}
+    reward = compute_reward(
+        proposal,
+        evaluation,
+        RewardWeights.from_config(reward_config.get("weights", {})),
+    )
+    current_judge = evaluation.current_test.judge or {}
     return _reward_payload({
         "score": reward.reward,
         "format_error": 0.0,
@@ -161,6 +184,13 @@ def compute_score(
         "regression_accuracy": evaluation.regression_accuracy,
         "failed_regression_count": float(evaluation.failed_regression_count),
         "new_chunk_count": float(len(proposal.new_chunks)),
+        "completeness_score": float(current_judge.get("completeness_score", 0.0)),
+        "answer_present": float(current_judge.get("answer_present", 0.0)),
+        "relation_overlap": float(current_judge.get("relation_overlap", 0.0)),
+        "fact_overlap": float(current_judge.get("fact_overlap", 0.0)),
+        "grounding_score": float(current_judge.get("grounding_score", 0.0)),
+        "duplicate_score": float(current_judge.get("duplicate_score", 0.0)),
+        "raw_copy_ratio": float(current_judge.get("raw_copy_ratio", 0.0)),
         **reward.parts,
     })
 
@@ -200,44 +230,16 @@ def _bad_score() -> Dict[str, float]:
         "regression_failure": 0.0,
         "chunk_count": 0.0,
         "length": 0.0,
+        "completeness": 0.0,
+        "grounded": 0.0,
+        "duplicate": 0.0,
+        "answer_only": 0.0,
+        "raw_copy": 0.0,
     })
 
 
 def _reward_payload(values: Dict[str, float]) -> Dict[str, float]:
     return {key: float(values.get(key, 0.0)) for key in REWARD_KEYS}
-
-
-def _evaluate_temp_memory(memory_store: MemoryStore, state: Dict[str, Any]) -> SandboxEvaluation:
-    top_k = int(state.get("top_k", 5))
-    current = _presence_test(memory_store, state["question"], state["answer"], top_k)
-    regressions = [
-        _presence_test(memory_store, item["question"], item["answer"], top_k)
-        for item in state.get("regression_questions", [])
-    ]
-    return SandboxEvaluation(current_test=current, regression_tests=regressions)
-
-
-def _presence_test(
-    memory_store: MemoryStore,
-    question: str,
-    answer: str,
-    top_k: int,
-) -> QuestionTestResult:
-    hits = FrozenBM25Retriever(memory_store).retrieve(question, top_k=top_k)
-    evidence = "\n".join(hit.content for hit in hits)
-    correct = _answer_in_text(answer, evidence)
-    return QuestionTestResult(
-        question=question,
-        gold_answer=answer,
-        correct=correct,
-        retrieved_memories=hits,
-        answer_result={
-            "answer": answer if correct else "UNKNOWN",
-            "reason": "local answer-presence reward",
-            "evidence_memory_ids": [hit.memory_id for hit in hits],
-        },
-        judge={"correct": correct, "method": "answer_presence"},
-    )
 
 
 def _memory_store_from_state(state: Dict[str, Any]) -> MemoryStore:
@@ -262,27 +264,19 @@ def _parse_json(text: str) -> Dict[str, Any]:
         return json.loads(text[start : end + 1])
 
 
-def _answer_in_text(answer: str, text: str) -> bool:
-    answer_norm = _normalize(answer)
-    text_norm = _normalize(text)
-    return bool(answer_norm and answer_norm in text_norm)
-
-
-def _normalize(text: str) -> str:
-    tokens = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", str(text or "").casefold())
-    tokens = [token for token in tokens if token not in {"a", "an", "the"}]
-    return " ".join(tokens)
-
-
 def _action_requirements(action: str, selected_count: int) -> List[str]:
     if action == ADD_ACTION:
         return [
             "Use only golden_facts to generate exactly one new chunk.",
+            "The chunk must contain the subject, relation, object, and useful qualifiers needed to answer the question; do not output an answer-only memory.",
+            "Populate facts, keywords, summary, and source_ids when available; these fields are retrieval keys.",
             "Do not output linked_questions; the system will bind the current question automatically.",
         ]
     return [
         "Merge selected_old_chunks with golden_facts.",
         f"Return no more than {selected_count} chunks.",
         "Preserve key facts needed to answer the old linked_questions.",
+        "Preserve the subject, relation, object, and useful qualifiers for the current question; do not output an answer-only memory.",
+        "Populate facts, keywords, summary, and source_ids when available; these fields are retrieval keys.",
         "Do not output linked_questions; the system will inherit lineage automatically.",
     ]

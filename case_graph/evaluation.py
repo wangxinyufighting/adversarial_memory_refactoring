@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from .baseline import AnswerEquivalenceJudge
 from .defense import RetrievedMemoryAnswerAgent
-from .retriever import FrozenBM25Retriever, MemoryStore
+from .retriever import MemoryStore, build_memory_retriever
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,7 @@ def evaluate_case_target(
     top_k: int = 5,
     min_score: float = 0.0,
     memory_path: str = "",
+    retriever_config: Optional[Dict[str, Any]] = None,
 ) -> TargetEvaluationResult:
     """Retrieve compressed memory and answer a graph's held-out target question."""
     case_id = str(graph.get("case_id", "unknown"))
@@ -56,7 +57,11 @@ def evaluate_case_target(
     if not question or not gold_answer:
         raise ValueError(f"Case {case_id} is missing target question or answer.")
 
-    hits = FrozenBM25Retriever(memory_store).retrieve(question, top_k=top_k, min_score=min_score)
+    hits = build_memory_retriever(retriever_config, memory_store).retrieve(
+        question,
+        top_k=top_k,
+        min_score=min_score,
+    )
     answer_result = answer_agent.answer(question, hits)
     candidate_answer = str(answer_result.get("answer", ""))
     judge_result = judge.judge(

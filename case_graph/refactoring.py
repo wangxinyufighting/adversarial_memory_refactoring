@@ -1,6 +1,7 @@
 import copy
 import json
 import random
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,7 +10,13 @@ from typing import Any, Dict, Iterable, List, Optional
 from .baseline import AnswerEquivalenceJudge, JsonClient
 from .defense import RetrievedMemoryAnswerAgent, SuccessPool
 from .llm import OpenAIChatClient
-from .retriever import FrozenBM25Retriever, MemoryChunk, MemoryStore, RetrievalHit
+from .retriever import (
+    FrozenBM25Retriever,
+    MemoryChunk,
+    MemoryStore,
+    RetrievalHit,
+    build_memory_retriever,
+)
 
 
 ADD_ACTION = "add"
@@ -65,19 +72,20 @@ class RefactorActionDecision:
 
 
 class SimilarityActionRouter:
-    """用冻结 Retriever 的相似度分数决定 Add 或 Merge。"""
+    """用配置的冻结 Retriever 相似度分数决定 Add 或 Merge。"""
 
-    def __init__(self, tau: float, top_k: int = 5):
+    def __init__(self, tau: float, top_k: int = 5, retriever_config: Optional[Dict[str, Any]] = None):
         self.tau = tau
         self.top_k = top_k
+        self.retriever_config = dict(retriever_config or {})
 
     def compute_similarity(
         self,
         question: str,
         memory_store: MemoryStore,
-        retriever: Optional[FrozenBM25Retriever] = None,
+        retriever: Optional[Any] = None,
     ) -> SimilarityReport:
-        retriever = retriever or FrozenBM25Retriever(memory_store)
+        retriever = retriever or build_memory_retriever(self.retriever_config, memory_store)
         hits = retriever.retrieve(question, top_k=self.top_k)
         return SimilarityReport.from_hits(question=question, hits=hits)
 
@@ -85,7 +93,7 @@ class SimilarityActionRouter:
         self,
         question: str,
         memory_store: MemoryStore,
-        retriever: Optional[FrozenBM25Retriever] = None,
+        retriever: Optional[Any] = None,
     ) -> RefactorActionDecision:
         report = self.compute_similarity(question, memory_store, retriever)
         if report.max_score < self.tau:
@@ -250,12 +258,27 @@ class SandboxEvaluation:
 
 @dataclass(frozen=True)
 class RewardWeights:
-    current_correct: float = 2.0
-    current_wrong: float = -2.0
-    regression_accuracy: float = 1.0
-    regression_failure: float = 1.0
-    chunk_count: float = 0.02
-    chars_per_1k: float = 0.05
+    current_correct: float = 3.0
+    current_wrong: float = -3.0
+    completeness: float = 2.0
+    completeness_missing: float = 2.0
+    grounded: float = 1.0
+    regression_accuracy: float = 1.25
+    regression_failure: float = 2.0
+    chunk_count: float = 0.2
+    tokens_per_100: float = 0.15
+    duplicate: float = 0.5
+    answer_only: float = 1.5
+    raw_copy: float = 0.5
+
+    @classmethod
+    def from_config(cls, config: Optional[Dict[str, Any]]) -> "RewardWeights":
+        config = dict(config or {})
+        values = {}
+        for field_name in cls.__dataclass_fields__:
+            if field_name in config:
+                values[field_name] = float(config[field_name])
+        return cls(**values)
 
 
 @dataclass(frozen=True)
@@ -534,15 +557,16 @@ def run_sandbox_evaluation(
     judge: AnswerEquivalenceJudge,
     top_k: int = 5,
     min_score: float = 0.0,
+    retriever_config: Optional[Dict[str, Any]] = None,
 ) -> SandboxEvaluation:
     """在 Mtemp 上测试当前题和历史回归题。"""
 
     current_test = _test_question(
-        temp_memory, current_question, current_answer, answer_agent, judge, top_k, min_score
+        temp_memory, current_question, current_answer, answer_agent, judge, top_k, min_score, retriever_config
     )
     regression_tests = [
         _test_question(
-            temp_memory, item.question, item.answer, answer_agent, judge, top_k, min_score
+            temp_memory, item.question, item.answer, answer_agent, judge, top_k, min_score, retriever_config
         )
         for item in regression_questions
     ]
@@ -554,22 +578,51 @@ def compute_reward(
     evaluation: SandboxEvaluation,
     weights: RewardWeights = RewardWeights(),
 ) -> RewardResult:
-    """当前题必须被重视，同时惩罚历史遗忘和冗长新记忆。"""
+    """Reward compact but complete memory.
 
+    The reward is gated: a chunk cannot get a high score merely because the
+    answer string appears in retrieved memory.  Completeness diagnostics are
+    optional for legacy callers; when absent, a correct current answer is
+    treated as complete to preserve backwards compatibility.
+    """
+
+    diagnostics = evaluation.current_test.judge or {}
+    complete = diagnostics.get("complete")
+    if complete is None:
+        complete = evaluation.current_test.correct
+    grounded_score = _float_diagnostic(diagnostics, "grounding_score", default=1.0 if complete else 0.0)
+    duplicate_score = _float_diagnostic(diagnostics, "duplicate_score", default=0.0)
+    raw_copy_ratio = _float_diagnostic(diagnostics, "raw_copy_ratio", default=0.0)
+    answer_only = bool(diagnostics.get("answer_only", False))
     current_part = weights.current_correct if evaluation.current_test.correct else weights.current_wrong
+    completeness_part = weights.completeness if complete else -weights.completeness_missing
+    grounded_part = weights.grounded * grounded_score
     regression_part = weights.regression_accuracy * evaluation.regression_accuracy
     failure_part = -weights.regression_failure * evaluation.failed_regression_count
     chunk_part = -weights.chunk_count * len(proposal.new_chunks)
-    char_count = sum(len(chunk.content) for chunk in proposal.new_chunks)
-    length_part = -weights.chars_per_1k * (char_count / 1000.0)
+    token_count = sum(len(_reward_tokens(chunk.content)) for chunk in proposal.new_chunks)
+    length_part = -weights.tokens_per_100 * (token_count / 100.0)
+    duplicate_part = -weights.duplicate * duplicate_score
+    answer_only_part = -weights.answer_only if answer_only else 0.0
+    raw_copy_part = -weights.raw_copy * raw_copy_ratio
     parts = {
         "current": current_part,
-        "regression_accuracy": regression_part,
+        "completeness": completeness_part,
+        "grounded": grounded_part,
+        "regression_reward": regression_part,
         "regression_failure": failure_part,
         "chunk_count": chunk_part,
         "length": length_part,
+        "duplicate": duplicate_part,
+        "answer_only": answer_only_part,
+        "raw_copy": raw_copy_part,
     }
-    return RewardResult(reward=sum(parts.values()), parts=parts)
+    reward = sum(parts.values())
+    if not evaluation.current_test.correct:
+        reward = min(reward, 0.0)
+    elif not complete:
+        reward = min(reward, 0.5)
+    return RewardResult(reward=reward, parts=parts)
 
 
 def run_sandbox_refactor(
@@ -583,6 +636,7 @@ def run_sandbox_refactor(
     top_k: int = 5,
     min_score: float = 0.0,
     reward_weights: RewardWeights = RewardWeights(),
+    retriever_config: Optional[Dict[str, Any]] = None,
 ) -> SandboxResult:
     temp_memory = build_sandbox_memory(memory_store, proposal, current_question=current_question)
     evaluation = run_sandbox_evaluation(
@@ -594,6 +648,7 @@ def run_sandbox_refactor(
         judge=judge,
         top_k=top_k,
         min_score=min_score,
+        retriever_config=retriever_config,
     )
     reward = compute_reward(proposal, evaluation, reward_weights)
     return SandboxResult(
@@ -612,8 +667,9 @@ def _test_question(
     judge: AnswerEquivalenceJudge,
     top_k: int,
     min_score: float,
+    retriever_config: Optional[Dict[str, Any]] = None,
 ) -> QuestionTestResult:
-    retriever = FrozenBM25Retriever(memory_store)
+    retriever = build_memory_retriever(retriever_config, memory_store)
     hits = retriever.retrieve(question, top_k=top_k, min_score=min_score)
     answer_result = answer_agent.answer(question, hits)
     judge_result = judge.judge(
@@ -629,6 +685,17 @@ def _test_question(
         answer_result=answer_result,
         judge=judge_result,
     )
+
+
+def _float_diagnostic(diagnostics: Dict[str, Any], key: str, default: float = 0.0) -> float:
+    try:
+        return float(diagnostics.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _reward_tokens(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", str(text or "").casefold())
 
 
 def _find_chunks(memory_store: MemoryStore, memory_ids: Iterable[str]) -> List[MemoryChunk]:

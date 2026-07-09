@@ -37,7 +37,14 @@ from .refactoring import (
     run_sandbox_refactor,
     settle_grpo_rollouts,
 )
-from .retriever import FrozenBM25Retriever, MemoryChunk, MemoryStore, RetrievalHit
+from .retriever import (
+    DenseStructuredMemoryRetriever,
+    FrozenBM25Retriever,
+    MemoryChunk,
+    MemoryStore,
+    RetrievalHit,
+    build_memory_retriever,
+)
 
 __all__ = [
     "ADD_ACTION",
@@ -49,6 +56,7 @@ __all__ = [
     "CaseGraphBuilder",
     "EntityRecord",
     "ExtractionResult",
+    "DenseStructuredMemoryRetriever",
     "FrozenBM25Retriever",
     "InitialDefenseOutcome",
     "LLMExtractor",
@@ -77,6 +85,7 @@ __all__ = [
     "TargetEvaluationResult",
     "archive_memory_snapshot",
     "build_sandbox_memory",
+    "build_memory_retriever",
     "build_verl_row",
     "compute_grpo_score",
     "compute_reward",
