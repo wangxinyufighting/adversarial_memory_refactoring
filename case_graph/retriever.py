@@ -500,18 +500,71 @@ class _HFEmbeddingEncoder:
 
         self.torch = torch
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        local_files_only = Path(model_name).exists()
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             cache_dir=cache_dir,
             trust_remote_code=True,
+            local_files_only=local_files_only,
         )
-        self.model = AutoModel.from_pretrained(
-            model_name,
+        self.model = self._load_model_on_real_device(
+            model_name=model_name,
             cache_dir=cache_dir,
-            trust_remote_code=True,
+            local_files_only=local_files_only,
         )
+        meta_parameters = [
+            name
+            for name, parameter in self.model.named_parameters()
+            if getattr(parameter, "is_meta", False)
+        ]
+        if meta_parameters:
+            preview = ", ".join(meta_parameters[:5])
+            raise RuntimeError(
+                "Embedding model loaded with meta tensors instead of real weights "
+                f"({len(meta_parameters)} parameters; examples: {preview}). "
+                "Check that the retriever model path contains a complete HuggingFace "
+                "checkpoint with weight files, or use RETRIEVER_EMBEDDING_MODEL=hash "
+                "for a no-model debug run."
+            )
         self.model.to(self.device)
         self.model.eval()
+
+    def _load_model_on_real_device(self, model_name: str, cache_dir: Optional[str], local_files_only: bool):
+        torch = self.torch
+        from transformers import AutoModel
+
+        previous_default_device = None
+        can_set_default_device = hasattr(torch, "set_default_device") and hasattr(torch, "get_default_device")
+        if can_set_default_device:
+            try:
+                previous_default_device = torch.get_default_device()
+                torch.set_default_device("cpu")
+            except Exception:
+                previous_default_device = None
+
+        try:
+            try:
+                return AutoModel.from_pretrained(
+                    model_name,
+                    cache_dir=cache_dir,
+                    trust_remote_code=True,
+                    local_files_only=local_files_only,
+                    low_cpu_mem_usage=False,
+                    device_map=None,
+                )
+            except TypeError:
+                return AutoModel.from_pretrained(
+                    model_name,
+                    cache_dir=cache_dir,
+                    trust_remote_code=True,
+                    local_files_only=local_files_only,
+                )
+        finally:
+            if previous_default_device is not None:
+                try:
+                    torch.set_default_device(previous_default_device)
+                except Exception:
+                    pass
 
     def encode(self, texts: List[str]) -> List[List[float]]:
         if not texts:
