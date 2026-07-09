@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Protocol
 from case_graph.attacker import FrozenLLMAttacker
 from case_graph.baseline import AnswerEquivalenceJudge
 from case_graph.defense import RetrievedMemoryAnswerAgent, SuccessPool
+from case_graph.evidence import route_golden_facts
 from case_graph.grpo_adapter import SYSTEM_PROMPT, build_user_prompt
 from case_graph.llm import OpenAIChatClient
 from case_graph.pipeline import AlgorithmConfig, prepare_refactor_state
@@ -25,7 +26,7 @@ from case_graph.refactoring import (
     settle_grpo_rollouts,
 )
 from case_graph.retriever import MemoryChunk, MemoryStore
-from case_graph.routing import RandomWalkRoutingPolicy
+from case_graph.routing import RandomWalkRoutingPolicy, public_route_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,45 @@ class DefenderCheckpointPolicy:
         )
 
 
+class RouteEvidenceAttacker:
+    """Deterministic construction-probe generator for runs without an attacker LLM."""
+
+    def generate(self, graph: Dict[str, Any], route: Any):
+        from case_graph.attacker import AttackExample
+
+        route_view = public_route_evidence(graph, route)
+        facts = route_golden_facts(graph, route)
+        edge = _preferred_route_edge(route.relationships)
+        if edge is None:
+            if not facts:
+                raise ValueError("Route has no relationships or source facts for deterministic probe generation.")
+            question = "What key information is recorded in the selected memory evidence?"
+            answer = str(facts[0].get("text", ""))[:300].strip()
+        else:
+            source = str(edge.get("source", ""))
+            target = str(edge.get("target", ""))
+            relation = str(edge.get("description", "related_to") or "related_to")
+            if source == "USER":
+                question = f"Which entity is the user connected to by the relation '{relation}'?"
+                answer = target
+            elif target == "USER":
+                question = f"Which entity is connected to the user by the relation '{relation}'?"
+                answer = source
+            else:
+                question = f"Which entity is connected from {source} by the relation '{relation}'?"
+                answer = target
+
+        if not answer:
+            raise ValueError("Deterministic probe generation produced an empty answer.")
+        return AttackExample(
+            case_id=str(graph.get("case_id", "")),
+            question=question,
+            answer=answer,
+            golden_facts=facts,
+            route=route_view,
+        )
+
+
 class EvaluationMemoryConstructor:
     """Build memories for held-out cases without using target metadata."""
 
@@ -215,18 +255,28 @@ class EvaluationMemoryConstructor:
 
         for episode in range(max(0, self.config.episodes_per_case)):
             seed = self.config.seed + episode * 1009
+            route_payload: Dict[str, Any] = {}
             try:
                 route = routing_policy.select_route(safe_graph, seed=seed)
+                route_payload = route.to_dict()
                 attack = self.attacker.generate(safe_graph, route)
                 attack_dict = attack.to_dict()
                 attack_dict["case_id"] = case_id
             except Exception as exc:
                 attack_failures += 1
+                if attack_failures <= 3:
+                    logger.warning(
+                        "Attack generation failed for case %s episode %d: %s",
+                        case_id,
+                        episode,
+                        exc,
+                    )
                 traces.append(
                     ConstructionStepTrace(
                         case_id=case_id,
                         episode=episode,
                         status="attack_generation_failed",
+                        route=route_payload,
                         error=str(exc),
                     )
                 )
@@ -420,6 +470,9 @@ def summarize_case_traces(
         "attack_generation_failed": sum(1 for trace in traces if trace.status == "attack_generation_failed"),
         "memory_chunks": len(memory_store.chunks),
         "memory_chars": sum(len(chunk.content) for chunk in memory_store.chunks),
+        "attack_failure_errors": _top_errors(
+            trace.error for trace in traces if trace.status == "attack_generation_failed"
+        ),
     }
 
 
@@ -460,6 +513,28 @@ def _source_ids_from_golden_facts(golden_facts: List[Dict[str, Any]]) -> List[st
             source_ids.append(source_id)
             seen.add(source_id)
     return source_ids
+
+
+def _preferred_route_edge(edges: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not edges:
+        return None
+    for edge in edges:
+        if edge.get("source") == "USER" or edge.get("target") == "USER":
+            return edge
+    return edges[0]
+
+
+def _top_errors(errors: Any, limit: int = 3) -> List[Dict[str, Any]]:
+    counts: Dict[str, int] = {}
+    for error in errors:
+        error = str(error or "").strip()
+        if not error:
+            continue
+        counts[error] = counts.get(error, 0) + 1
+    return [
+        {"error": error, "count": count}
+        for error, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    ]
 
 
 def _source_ids_from_state(state: Dict[str, Any]) -> List[str]:

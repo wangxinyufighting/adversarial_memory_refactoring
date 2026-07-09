@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -20,6 +21,7 @@ from .memory_construction import (
     DefenderCheckpointPolicy,
     EvaluationMemoryConstructor,
     MemoryConstructionConfig,
+    RouteEvidenceAttacker,
     build_openai_client,
     construct_memories_for_graphs,
 )
@@ -47,6 +49,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--defender-server-dtype", default="bfloat16")
     parser.add_argument("--defender-server-tp", type=int, default=1)
     parser.add_argument("--defender-server-gpu-memory-utilization", type=float, default=0.6)
+    parser.add_argument("--defender-server-max-model-len", type=int)
+    parser.add_argument("--defender-server-api-key", default="")
     parser.add_argument("--defender-server-startup-timeout", type=float, default=600)
     parser.add_argument("--defender-checkpoint-backend", default="fsdp", choices=["fsdp", "megatron"])
     parser.add_argument("--defender-checkpoint-subdir", default="actor")
@@ -56,6 +60,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--attacker-api-key", default="dummy-key")
     parser.add_argument("--attacker-timeout", type=int, default=120)
     parser.add_argument("--attacker-max-output-tokens", type=int, default=700)
+    parser.add_argument(
+        "--attacker-mode",
+        choices=["auto", "llm", "route"],
+        default="auto",
+        help="Use an LLM attacker, deterministic route probes, or auto fallback.",
+    )
 
     parser.add_argument("--answer-api-base", help="Optional answer backbone API base.")
     parser.add_argument("--answer-model", help="Optional answer backbone model name.")
@@ -80,6 +90,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--routing-max-steps", type=int, default=3)
     parser.add_argument("--routing-min-nodes", type=int, default=1)
     parser.add_argument("--routing-attempts", type=int, default=8)
+    parser.add_argument("--max-attack-failures", type=int, default=20)
     parser.add_argument("--exp-name", default="eval_memory_construction")
     parser.add_argument("--no-traces", action="store_true")
     return parser.parse_args()
@@ -115,6 +126,7 @@ def main() -> None:
             routing_max_steps=args.routing_max_steps,
             routing_min_nodes=args.routing_min_nodes,
             routing_attempts=args.routing_attempts,
+            max_attack_failures=args.max_attack_failures,
             defender_max_output_tokens=args.defender_max_output_tokens,
             attacker_max_output_tokens=args.attacker_max_output_tokens,
             exp_name=args.exp_name,
@@ -128,15 +140,7 @@ def main() -> None:
             ),
             max_output_tokens=args.defender_max_output_tokens,
         )
-        attacker = FrozenLLMAttacker(
-            client=_optional_client(
-                model=args.attacker_model,
-                api_base=args.attacker_api_base,
-                api_key=args.attacker_api_key,
-                timeout=args.attacker_timeout,
-            ),
-            max_output_tokens=args.attacker_max_output_tokens,
-        )
+        attacker = _build_attacker(args)
         answer_agent = RetrievedMemoryAnswerAgent(
             client=_optional_client(
                 model=args.answer_model,
@@ -194,6 +198,43 @@ def _optional_client(
     )
 
 
+def _build_attacker(args: argparse.Namespace):
+    if args.attacker_mode == "route":
+        logger.info("Using deterministic route-evidence attacker for construction probes.")
+        return RouteEvidenceAttacker()
+
+    client = _optional_client(
+        model=args.attacker_model,
+        api_base=args.attacker_api_base,
+        api_key=args.attacker_api_key,
+        timeout=args.attacker_timeout,
+    )
+    if args.attacker_mode == "auto" and client is None and not _env_llm_configured():
+        logger.warning(
+            "No attacker LLM config found; falling back to deterministic route-evidence probes. "
+            "Set ATTACKER_API_BASE and ATTACKER_MODEL, or pass --attacker-mode llm, to force an LLM attacker."
+        )
+        return RouteEvidenceAttacker()
+
+    return FrozenLLMAttacker(
+        client=client,
+        max_output_tokens=args.attacker_max_output_tokens,
+    )
+
+
+def _env_llm_configured() -> bool:
+    return any(
+        os.environ.get(name)
+        for name in (
+            "CASE_GRAPH_PROVIDER",
+            "LOCAL_API_BASE_URL",
+            "LOCAL_BASE_URL",
+            "OPENAI_API_KEY",
+            "DEEPSEEK_API_KEY",
+        )
+    )
+
+
 def _start_defender_server(args: argparse.Namespace, output_dir: Path) -> DefenderServerManager:
     parsed = urlparse(args.defender_api_base)
     request_host = parsed.hostname or "localhost"
@@ -208,6 +249,8 @@ def _start_defender_server(args: argparse.Namespace, output_dir: Path) -> Defend
         dtype=args.defender_server_dtype,
         tensor_parallel_size=args.defender_server_tp,
         gpu_memory_utilization=args.defender_server_gpu_memory_utilization,
+        max_model_len=args.defender_server_max_model_len,
+        api_key=args.defender_server_api_key,
         startup_timeout=args.defender_server_startup_timeout,
         checkpoint_backend=args.defender_checkpoint_backend,
         checkpoint_subdir=args.defender_checkpoint_subdir,

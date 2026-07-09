@@ -42,6 +42,30 @@ OUTPUT_DIR=outputs/eval_memory_construction/global_step_100 \
 
 Use the environment's `python` binary, not necessarily `python3`. Some conda setups leave `python3` pointing to the base interpreter, which can accidentally run this code under Python 3.8.
 
+Construction probe generation defaults to `ATTACKER_MODE=auto`. In auto mode, the CLI uses an attacker LLM when `ATTACKER_API_BASE` and `ATTACKER_MODEL` or global `CASE_GRAPH_*`/`LOCAL_*`/API-key env vars are present; otherwise it falls back to deterministic route-evidence probes. To force the fallback:
+
+```bash
+ATTACKER_MODE=route \
+MANAGE_DEFENDER_SERVER=true \
+DEFENDER_CHECKPOINT=outputs/grpo/checkpoints/global_step_100 \
+GRAPHS=outputs/case_graphs_test \
+OUTPUT_DIR=outputs/eval_memory_construction/global_step_100 \
+./scripts/construct_defender_memory_for_eval.sh
+```
+
+To use your local attacker server instead:
+
+```bash
+ATTACKER_MODE=llm \
+ATTACKER_API_BASE=http://localhost:8003/v1 \
+ATTACKER_MODEL=Qwen3-0.6B \
+MANAGE_DEFENDER_SERVER=true \
+DEFENDER_CHECKPOINT=outputs/grpo/checkpoints/global_step_100 \
+GRAPHS=outputs/case_graphs_test \
+OUTPUT_DIR=outputs/eval_memory_construction/global_step_100 \
+./scripts/construct_defender_memory_for_eval.sh
+```
+
 Important outputs:
 
 - `memory_states/<case_id>.json`: final memory for evaluation.

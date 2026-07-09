@@ -18,6 +18,9 @@ args=(
 )
 
 [[ -n "${INITIAL_MEMORY_DIR:-}" ]] && args+=(--initial-memory-dir "${INITIAL_MEMORY_DIR}")
+[[ -n "${DEFENDER_API_KEY:-}" ]] && args+=(--defender-api-key "${DEFENDER_API_KEY}")
+[[ -n "${DEFENDER_TIMEOUT:-}" ]] && args+=(--defender-timeout "${DEFENDER_TIMEOUT}")
+[[ -n "${DEFENDER_MAX_OUTPUT_TOKENS:-}" ]] && args+=(--defender-max-output-tokens "${DEFENDER_MAX_OUTPUT_TOKENS}")
 [[ -n "${DEFENDER_CHECKPOINT:-}" ]] && args+=(--defender-checkpoint "${DEFENDER_CHECKPOINT}")
 [[ -n "${MANAGE_DEFENDER_SERVER:-}" ]] && args+=(--manage-defender-server)
 [[ -n "${DEFENDER_SERVER_PORT:-}" ]] && args+=(--defender-server-port "${DEFENDER_SERVER_PORT}")
@@ -25,6 +28,12 @@ args=(
 [[ -n "${DEFENDER_SERVER_DTYPE:-}" ]] && args+=(--defender-server-dtype "${DEFENDER_SERVER_DTYPE}")
 [[ -n "${DEFENDER_SERVER_TP:-}" ]] && args+=(--defender-server-tp "${DEFENDER_SERVER_TP}")
 [[ -n "${DEFENDER_SERVER_GPU_MEMORY_UTILIZATION:-}" ]] && args+=(--defender-server-gpu-memory-utilization "${DEFENDER_SERVER_GPU_MEMORY_UTILIZATION}")
+[[ -n "${DEFENDER_SERVER_MAX_MODEL_LEN:-}" ]] && args+=(--defender-server-max-model-len "${DEFENDER_SERVER_MAX_MODEL_LEN}")
+if [[ -n "${DEFENDER_SERVER_API_KEY:-}" ]]; then
+  args+=(--defender-server-api-key "${DEFENDER_SERVER_API_KEY}")
+elif [[ -n "${MANAGE_DEFENDER_SERVER:-}" && -n "${DEFENDER_API_KEY:-}" ]]; then
+  args+=(--defender-server-api-key "${DEFENDER_API_KEY}")
+fi
 [[ -n "${DEFENDER_SERVER_STARTUP_TIMEOUT:-}" ]] && args+=(--defender-server-startup-timeout "${DEFENDER_SERVER_STARTUP_TIMEOUT}")
 [[ -n "${DEFENDER_CHECKPOINT_BACKEND:-}" ]] && args+=(--defender-checkpoint-backend "${DEFENDER_CHECKPOINT_BACKEND}")
 [[ -n "${DEFENDER_CHECKPOINT_SUBDIR:-}" ]] && args+=(--defender-checkpoint-subdir "${DEFENDER_CHECKPOINT_SUBDIR}")
@@ -33,6 +42,7 @@ args=(
 [[ -n "${ATTACKER_MODEL:-}" ]] && args+=(--attacker-model "${ATTACKER_MODEL}")
 [[ -n "${ATTACKER_API_KEY:-}" ]] && args+=(--attacker-api-key "${ATTACKER_API_KEY}")
 [[ -n "${ATTACKER_TIMEOUT:-}" ]] && args+=(--attacker-timeout "${ATTACKER_TIMEOUT}")
+[[ -n "${ATTACKER_MODE:-}" ]] && args+=(--attacker-mode "${ATTACKER_MODE}")
 
 [[ -n "${ANSWER_API_BASE:-}" ]] && args+=(--answer-api-base "${ANSWER_API_BASE}")
 [[ -n "${ANSWER_MODEL:-}" ]] && args+=(--answer-model "${ANSWER_MODEL}")
@@ -53,6 +63,7 @@ args=(
 [[ -n "${ROUTING_MAX_STEPS:-}" ]] && args+=(--routing-max-steps "${ROUTING_MAX_STEPS}")
 [[ -n "${ROUTING_MIN_NODES:-}" ]] && args+=(--routing-min-nodes "${ROUTING_MIN_NODES}")
 [[ -n "${ROUTING_ATTEMPTS:-}" ]] && args+=(--routing-attempts "${ROUTING_ATTEMPTS}")
+[[ -n "${MAX_ATTACK_FAILURES:-}" ]] && args+=(--max-attack-failures "${MAX_ATTACK_FAILURES}")
 [[ -n "${EXP_NAME:-}" ]] && args+=(--exp-name "${EXP_NAME}")
 [[ -n "${NO_TRACES:-}" ]] && args+=(--no-traces)
 

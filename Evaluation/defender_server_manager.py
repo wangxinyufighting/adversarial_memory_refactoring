@@ -42,6 +42,8 @@ class DefenderServerManager:
         dtype: str = "bfloat16",
         tensor_parallel_size: int = 1,
         gpu_memory_utilization: float = 0.6,
+        max_model_len: Optional[int] = None,
+        api_key: str = "",
         startup_timeout: float = 600,
         health_check_interval: float = 5,
         shutdown_timeout: float = 30,
@@ -57,6 +59,8 @@ class DefenderServerManager:
         self.dtype = dtype
         self.tensor_parallel_size = int(tensor_parallel_size)
         self.gpu_memory_utilization = float(gpu_memory_utilization)
+        self.max_model_len = int(max_model_len) if max_model_len else None
+        self.api_key = str(api_key or "")
         self.startup_timeout = float(startup_timeout)
         self.health_check_interval = float(health_check_interval)
         self.shutdown_timeout = float(shutdown_timeout)
@@ -161,7 +165,7 @@ class DefenderServerManager:
         return actor if actor.exists() else checkpoint_path
 
     def _server_command(self, model_path: Path) -> List[str]:
-        return [
+        cmd = [
             self.python_executable,
             "-m",
             "vllm.entrypoints.openai.api_server",
@@ -180,6 +184,11 @@ class DefenderServerManager:
             "--gpu-memory-utilization",
             str(self.gpu_memory_utilization),
         ]
+        if self.max_model_len is not None:
+            cmd.extend(["--max-model-len", str(self.max_model_len)])
+        if self.api_key:
+            cmd.extend(["--api-key", self.api_key])
+        return cmd
 
     def _wait_until_ready(self) -> None:
         url = f"{self.api_base}/models"
@@ -191,7 +200,8 @@ class DefenderServerManager:
                     f"See log: {self.log_file.name if self.log_file else 'unknown'}"
                 )
             try:
-                with urllib.request.urlopen(url, timeout=10) as response:
+                request = urllib.request.Request(url=url, method="GET", headers=self._health_headers())
+                with urllib.request.urlopen(request, timeout=10) as response:
                     payload = json.loads(response.read().decode("utf-8"))
                 model_ids = _model_ids(payload)
                 if self.served_model_name in model_ids:
@@ -201,6 +211,9 @@ class DefenderServerManager:
                 pass
             time.sleep(self.health_check_interval)
         raise TimeoutError(f"Defender server did not become ready within {self.startup_timeout:.0f}s at {url}")
+
+    def _health_headers(self) -> Dict[str, str]:
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
 
 def _is_hf_model_dir(path: Path) -> bool:
