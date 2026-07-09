@@ -442,7 +442,10 @@ def retriever_config_from_mapping(config: Optional[Dict[str, Any]]) -> Dict[str,
         "retriever_require_model": "require_model",
     }
     for source, target in aliases.items():
-        if source in config and target not in result:
+        # Top-level keys are usually CLI/env overrides. They must win over the
+        # nested YAML defaults, otherwise e.g. RETRIEVER_MODEL_NAME cannot
+        # replace configs/online_grpo.yaml::retriever.model_name.
+        if source in config:
             result[target] = config[source]
     return result
 
