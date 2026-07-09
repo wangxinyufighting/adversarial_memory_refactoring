@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -140,24 +141,22 @@ def main() -> None:
             max_output_tokens=args.defender_max_output_tokens,
         )
         attacker = _build_attacker(args)
+        answer_client = _build_answer_client(args, defender_api_base, defender_served_model)
+        judge_client = _optional_client(
+            model=args.judge_model,
+            api_base=args.judge_api_base,
+            api_key=args.judge_api_key,
+            timeout=args.judge_timeout,
+        )
+        use_llm_judge = _use_llm_judge(args, judge_client)
         answer_agent = RetrievedMemoryAnswerAgent(
-            client=_optional_client(
-                model=args.answer_model,
-                api_base=args.answer_api_base,
-                api_key=args.answer_api_key,
-                timeout=args.answer_timeout,
-            ),
+            client=answer_client,
             max_output_tokens=args.answer_max_output_tokens,
         )
         judge = AnswerEquivalenceJudge(
-            client=_optional_client(
-                model=args.judge_model,
-                api_base=args.judge_api_base,
-                api_key=args.judge_api_key,
-                timeout=args.judge_timeout,
-            ),
+            client=judge_client,
             max_output_tokens=args.judge_max_output_tokens,
-            use_llm=not args.skip_llm_judge,
+            use_llm=use_llm_judge,
         )
         constructor = EvaluationMemoryConstructor(
             config=config,
@@ -208,11 +207,68 @@ def _build_attacker(args: argparse.Namespace):
         api_key=args.attacker_api_key,
         timeout=args.attacker_timeout,
     )
+    if client is None and not _env_llm_configured():
+        raise SystemExit(
+            "ATTACKER_MODE=llm requires ATTACKER_API_BASE/ATTACKER_MODEL or a global LLM env "
+            "such as CASE_GRAPH_PROVIDER=local with LOCAL_API_BASE_URL. Use ATTACKER_MODE=coverage "
+            "when no attacker server is needed."
+        )
 
     logger.info("Using LLM attacker for training-consistent construction probes.")
     return FrozenLLMAttacker(
         client=client,
         max_output_tokens=args.attacker_max_output_tokens,
+    )
+
+
+def _build_answer_client(
+    args: argparse.Namespace,
+    defender_api_base: str,
+    defender_served_model: str,
+):
+    client = _optional_client(
+        model=args.answer_model,
+        api_base=args.answer_api_base,
+        api_key=args.answer_api_key,
+        timeout=args.answer_timeout,
+    )
+    if client is not None or _env_llm_configured():
+        return client
+
+    logger.warning(
+        "No answer API or global LLM env configured; reusing the defender endpoint for "
+        "retrieved-memory answering. Set ANSWER_API_BASE/ANSWER_MODEL to use a separate answer model."
+    )
+    return build_openai_client(
+        model=defender_served_model,
+        api_base=defender_api_base,
+        api_key=args.defender_api_key,
+        timeout=args.defender_timeout,
+    )
+
+
+def _use_llm_judge(args: argparse.Namespace, judge_client) -> bool:
+    if args.skip_llm_judge:
+        return False
+    if judge_client is not None or _env_llm_configured():
+        return True
+    logger.warning(
+        "No judge API or global LLM env configured; using string-match answer judging. "
+        "Set JUDGE_API_BASE/JUDGE_MODEL for semantic judging."
+    )
+    return False
+
+
+def _env_llm_configured() -> bool:
+    return any(
+        os.environ.get(name)
+        for name in (
+            "CASE_GRAPH_PROVIDER",
+            "LOCAL_API_BASE_URL",
+            "LOCAL_BASE_URL",
+            "OPENAI_API_KEY",
+            "DEEPSEEK_API_KEY",
+        )
     )
 
 

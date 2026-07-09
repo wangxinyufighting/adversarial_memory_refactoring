@@ -58,6 +58,8 @@ OUTPUT_DIR=outputs/eval_memory_construction/global_step_100 \
 ./scripts/construct_defender_memory_for_eval.sh
 ```
 
+In `coverage` mode no attacker server is required. If `ANSWER_API_BASE` is not set and no global LLM env is configured, the builder reuses the defender endpoint for retrieved-memory answering. If `JUDGE_API_BASE` is not set and no global LLM env is configured, it falls back to string-match judging.
+
 To use the training-consistent local attacker server instead:
 
 ```bash
