@@ -122,8 +122,8 @@ def evaluate_completeness(
     question = str(state.get("question", ""))
     answer = str(state.get("answer", ""))
     golden_texts = _golden_fact_texts(state.get("golden_facts", []))
-    generated_text = "\n".join(chunk.content for chunk in proposal.new_chunks)
-    retrieved_text = "\n".join(hit.content for hit in retrieved_memories)
+    generated_text = "\n".join(_chunk_evidence_text(chunk) for chunk in proposal.new_chunks)
+    retrieved_text = "\n".join(_hit_evidence_text(hit) for hit in retrieved_memories)
     evidence_text = "\n".join([retrieved_text, generated_text])
 
     answer_present = _answer_in_text(answer, evidence_text)
@@ -143,6 +143,13 @@ def evaluate_completeness(
     grounding_score = _jaccard(generated_tokens, reference_tokens) if generated_tokens else 0.0
     duplicate_score = _duplicate_score(proposal, state)
     raw_copy_ratio = _raw_copy_ratio(proposal, golden_texts)
+    structured = _evaluate_structured_route(
+        route_evidence=state.get("route_evidence") or {},
+        question=question,
+        answer=answer,
+        generated_text=generated_text,
+        reward_config=reward_config,
+    )
 
     min_relation_overlap = float(reward_config.get("min_relation_overlap", 0.25))
     min_fact_overlap = float(reward_config.get("min_fact_overlap", 0.25))
@@ -151,19 +158,31 @@ def evaluate_completeness(
     answer_only = answer_present and (
         len(non_answer_tokens) < min_non_answer_tokens or relation_overlap < 0.15
     )
-    complete = bool(
-        answer_present
-        and not answer_only
-        and relation_overlap >= min_relation_overlap
-        and fact_overlap >= min_fact_overlap
-    )
-    completeness_score = (
-        0.4 * float(answer_present)
-        + 0.3 * relation_overlap
-        + 0.3 * fact_overlap
-    )
+    if structured["structured_available"]:
+        complete = bool(answer_present and not answer_only and structured["structured_complete"])
+        completeness_score = (
+            0.25 * float(answer_present)
+            + 0.20 * structured["subject_coverage"]
+            + 0.20 * structured["object_coverage"]
+            + 0.20 * structured["structured_relation_coverage"]
+            + 0.15 * structured["qualifier_coverage"]
+        )
+        completeness_method = "structured_route_completeness"
+    else:
+        complete = bool(
+            answer_present
+            and not answer_only
+            and relation_overlap >= min_relation_overlap
+            and fact_overlap >= min_fact_overlap
+        )
+        completeness_score = (
+            0.4 * float(answer_present)
+            + 0.3 * relation_overlap
+            + 0.3 * fact_overlap
+        )
+        completeness_method = "semantic_relation_completeness"
     return {
-        "completeness_method": "semantic_relation_completeness",
+        "completeness_method": completeness_method,
         "complete": complete,
         "completeness_score": completeness_score,
         "answer_present": answer_present,
@@ -174,7 +193,178 @@ def evaluate_completeness(
         "duplicate_score": duplicate_score,
         "raw_copy_ratio": raw_copy_ratio,
         "missing_relation_terms": sorted(relation_tokens - generated_tokens),
+        **structured,
     }
+
+
+def _evaluate_structured_route(
+    route_evidence: Any,
+    question: str,
+    answer: str,
+    generated_text: str,
+    reward_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(route_evidence, dict):
+        return _empty_structured_diagnostics()
+    relationships = [
+        item for item in route_evidence.get("relationships", []) if isinstance(item, dict)
+    ]
+    if not relationships:
+        return _empty_structured_diagnostics()
+
+    relevant = _relevant_route_relationships(relationships, question, answer)
+    if not relevant:
+        return _empty_structured_diagnostics()
+
+    entity_descriptions = {
+        _normalize(str(item.get("name", ""))): str(item.get("description", ""))
+        for item in route_evidence.get("entities", [])
+        if isinstance(item, dict) and item.get("name")
+    }
+    question_tokens = set(_significant_tokens(question))
+    answer_tokens = set(_significant_tokens(answer, keep_stopwords=True))
+    generated_tokens = set(_significant_tokens(generated_text, keep_stopwords=True))
+
+    subject_scores: List[float] = []
+    object_scores: List[float] = []
+    relation_scores: List[float] = []
+    qualifier_scores: List[float] = []
+    checked_edges: List[Dict[str, Any]] = []
+    missing: List[str] = []
+
+    for edge in relevant:
+        source = str(edge.get("source", ""))
+        target = str(edge.get("target", ""))
+        relation = str(edge.get("description") or edge.get("relation") or "")
+        source_score = _phrase_coverage(source, generated_text)
+        target_score = _phrase_coverage(target, generated_text)
+        relation_tokens = set(_significant_tokens(relation))
+        relation_score = _coverage(relation_tokens, generated_tokens)
+
+        endpoint_tokens = set(_significant_tokens(f"{source} {target}"))
+        description_tokens = set(
+            _significant_tokens(
+                " ".join(
+                    [
+                        entity_descriptions.get(_normalize(source), ""),
+                        entity_descriptions.get(_normalize(target), ""),
+                    ]
+                )
+            )
+        )
+        qualifier_tokens = (
+            question_tokens & description_tokens
+        ) - endpoint_tokens - answer_tokens - relation_tokens
+        qualifier_score = _coverage(qualifier_tokens, generated_tokens)
+
+        subject_scores.append(source_score)
+        object_scores.append(target_score)
+        relation_scores.append(relation_score)
+        qualifier_scores.append(qualifier_score)
+        checked_edges.append(
+            {
+                "source": source,
+                "relation": relation,
+                "target": target,
+                "qualifiers": sorted(qualifier_tokens),
+            }
+        )
+
+    subject_coverage = min(subject_scores)
+    object_coverage = min(object_scores)
+    relation_coverage = min(relation_scores)
+    qualifier_coverage = min(qualifier_scores)
+    min_entity = float(reward_config.get("min_structured_entity_coverage", 0.8))
+    min_relation = float(reward_config.get("min_structured_relation_coverage", 0.5))
+    min_qualifier = float(reward_config.get("min_qualifier_overlap", 0.5))
+
+    if subject_coverage < min_entity:
+        missing.append("subject")
+    if object_coverage < min_entity:
+        missing.append("object")
+    if relation_coverage < min_relation:
+        missing.append("relation")
+    if qualifier_coverage < min_qualifier:
+        missing.append("qualifier")
+
+    return {
+        "structured_available": True,
+        "structured_complete": not missing,
+        "subject_coverage": subject_coverage,
+        "object_coverage": object_coverage,
+        "structured_relation_coverage": relation_coverage,
+        "qualifier_coverage": qualifier_coverage,
+        "structured_edges_checked": checked_edges,
+        "missing_structured_components": missing,
+    }
+
+
+def _empty_structured_diagnostics() -> Dict[str, Any]:
+    return {
+        "structured_available": False,
+        "structured_complete": False,
+        "subject_coverage": 0.0,
+        "object_coverage": 0.0,
+        "structured_relation_coverage": 0.0,
+        "qualifier_coverage": 0.0,
+        "structured_edges_checked": [],
+        "missing_structured_components": [],
+    }
+
+
+def _relevant_route_relationships(
+    relationships: List[Dict[str, Any]], question: str, answer: str
+) -> List[Dict[str, Any]]:
+    question_tokens = set(_significant_tokens(question))
+    scored = []
+    for edge in relationships:
+        source = str(edge.get("source", ""))
+        target = str(edge.get("target", ""))
+        relation = str(edge.get("description") or edge.get("relation") or "")
+        edge_text = f"{source} {relation} {target}"
+        edge_tokens = set(_significant_tokens(edge_text))
+        answer_match = _answer_in_text(answer, edge_text)
+        named_endpoint_match = any(
+            endpoint.casefold() != "user" and _answer_in_text(endpoint, question)
+            for endpoint in (source, target)
+            if endpoint.strip()
+        )
+        relation_match = bool(set(_significant_tokens(relation)) & question_tokens)
+        overlap = len(edge_tokens & question_tokens)
+        if answer_match or named_endpoint_match or relation_match:
+            scored.append((int(answer_match), overlap, edge))
+
+    if not scored:
+        scored = [
+            (
+                0,
+                len(
+                    set(
+                        _significant_tokens(
+                            f"{edge.get('source', '')} {edge.get('description', '')} {edge.get('target', '')}"
+                        )
+                    )
+                    & question_tokens
+                ),
+                edge,
+            )
+            for edge in relationships
+        ]
+        scored.sort(key=lambda item: item[1], reverse=True)
+        return [scored[0][2]] if scored and scored[0][1] > 0 else []
+
+    scored.sort(key=lambda item: (-item[0], -item[1]))
+    return [item[2] for item in scored]
+
+
+def _phrase_coverage(required_phrase: str, actual_text: str) -> float:
+    required = _normalize(required_phrase)
+    actual = _normalize(actual_text)
+    if not required:
+        return 1.0
+    if required in actual:
+        return 1.0
+    return _coverage(_significant_tokens(required_phrase), _significant_tokens(actual_text))
 
 
 def _test_question(
@@ -203,7 +393,7 @@ def _test_question(
         )
         correct = bool(judge_result.get("correct", False))
     else:
-        evidence = "\n".join(hit.content for hit in hits)
+        evidence = "\n".join(_hit_evidence_text(hit) for hit in hits)
         correct = _answer_in_text(gold_answer, evidence)
         answer_result = {
             "answer": gold_answer if correct else "UNKNOWN",
@@ -250,9 +440,34 @@ def _reference_text_for_grounding(state: Dict[str, Any]) -> str:
         memory = memory.get("memories", memory.get("chunks", []))
     for item in memory or []:
         chunk = item if isinstance(item, MemoryChunk) else MemoryChunk.from_dict(item)
-        if not selected or chunk.memory_id in selected:
+        # ADD proposals are grounded only in current raw evidence. MERGE may
+        # additionally reuse the explicitly selected old chunks.
+        if selected and chunk.memory_id in selected:
             texts.append(chunk.content)
     return "\n".join(texts)
+
+
+def _chunk_evidence_text(chunk: MemoryChunk) -> str:
+    parts = [chunk.content]
+    metadata = chunk.metadata or {}
+    for key in ("facts", "fact", "summary", "keywords"):
+        value = metadata.get(key)
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value)
+        elif value:
+            parts.append(str(value))
+    return "\n".join(part for part in parts if str(part).strip())
+
+
+def _hit_evidence_text(hit: RetrievalHit) -> str:
+    return _chunk_evidence_text(
+        MemoryChunk(
+            memory_id=hit.memory_id,
+            content=hit.content,
+            linked_questions=hit.linked_questions,
+            metadata=hit.metadata,
+        )
+    )
 
 
 def _duplicate_score(proposal: RefactorProposal, state: Dict[str, Any]) -> float:

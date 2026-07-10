@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -102,7 +103,7 @@ class OpenAIChatClient:
                 or "local-model",
                 api_key=os.environ.get("LOCAL_API_KEY") or openai_key or "dummy-key",
                 base_url=(local_base_url or "http://localhost:8000/v1").rstrip("/"),
-                timeout=int(os.environ.get("CASE_GRAPH_TIMEOUT", "120")),
+                timeout=int(os.environ.get("CASE_GRAPH_TIMEOUT", "180")),
             )
 
         if use_deepseek:
@@ -115,7 +116,7 @@ class OpenAIChatClient:
                 or "deepseek-v4-flash",
                 api_key=api_key,
                 base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
-                timeout=int(os.environ.get("CASE_GRAPH_TIMEOUT", "120")),
+                timeout=int(os.environ.get("CASE_GRAPH_TIMEOUT", "180")),
                 thinking={"type": os.environ.get("DEEPSEEK_THINKING", "disabled")},
             )
 
@@ -161,6 +162,7 @@ class OpenAIChatClient:
         user_prompt: str,
         max_tokens: Optional[int] = None,
         json_response: bool = True,
+        max_retries: int = 3,
     ) -> str:
         payload = self.build_payload(
             system_prompt,
@@ -177,14 +179,42 @@ class OpenAIChatClient:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                raw = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"LLM API request failed with HTTP {exc.code}: {body}") from exc
-        data = json.loads(raw)
-        return data["choices"][0]["message"]["content"]
+
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    raw = response.read().decode("utf-8")
+                data = json.loads(raw)
+                return data["choices"][0]["message"]["content"]
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                # Retry on 5xx errors (server errors) and 522 (connection timeout)
+                if exc.code >= 500 or exc.code == 522:
+                    last_error = exc
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                        time.sleep(wait_time)
+                        continue
+                # Don't retry on 4xx errors (client errors)
+                raise RuntimeError(f"LLM API request failed with HTTP {exc.code}: {body}") from exc
+            except urllib.error.URLError as exc:
+                # Network errors (DNS, connection refused, etc.)
+                last_error = exc
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    time.sleep(wait_time)
+                    continue
+                raise RuntimeError(f"LLM API request failed with network error: {exc.reason}") from exc
+
+        # If all retries failed
+        if last_error:
+            if isinstance(last_error, urllib.error.HTTPError):
+                body = last_error.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"LLM API request failed after {max_retries} retries with HTTP {last_error.code}: {body}") from last_error
+            else:
+                raise RuntimeError(f"LLM API request failed after {max_retries} retries: {last_error}") from last_error
+        raise RuntimeError(f"LLM API request failed after {max_retries} retries")
 
     def complete_json(
         self,

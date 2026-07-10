@@ -58,6 +58,12 @@ REWARD_KEYS = (
     "grounding_score",
     "duplicate_score",
     "raw_copy_ratio",
+    "structured_available",
+    "structured_complete",
+    "subject_coverage",
+    "object_coverage",
+    "structured_relation_coverage",
+    "qualifier_coverage",
 )
 
 
@@ -94,6 +100,8 @@ def build_verl_row_online(state: Dict[str, Any], tokenizer=None, index: int = 0)
         "question": state.get("question", ""),
         "answer": state.get("answer", ""),
         "golden_facts": state.get("golden_facts", []),
+        # Evaluator-only evidence: build_user_prompt intentionally excludes it.
+        "route_evidence": state.get("route_evidence", {}),
         "action": state.get("action", "add"),
         "selected_memory_ids": state.get("selected_memory_ids", []),
         "current_memory": memory_chunks,
@@ -191,6 +199,14 @@ def compute_score(
         "grounding_score": float(current_judge.get("grounding_score", 0.0)),
         "duplicate_score": float(current_judge.get("duplicate_score", 0.0)),
         "raw_copy_ratio": float(current_judge.get("raw_copy_ratio", 0.0)),
+        "structured_available": float(current_judge.get("structured_available", 0.0)),
+        "structured_complete": float(current_judge.get("structured_complete", 0.0)),
+        "subject_coverage": float(current_judge.get("subject_coverage", 0.0)),
+        "object_coverage": float(current_judge.get("object_coverage", 0.0)),
+        "structured_relation_coverage": float(
+            current_judge.get("structured_relation_coverage", 0.0)
+        ),
+        "qualifier_coverage": float(current_judge.get("qualifier_coverage", 0.0)),
         **reward.parts,
     })
 

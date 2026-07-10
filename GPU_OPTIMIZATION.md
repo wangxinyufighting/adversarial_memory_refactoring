@@ -119,3 +119,32 @@ If GPU utilization is still low after these changes:
 
 - `configs/online_grpo.yaml` - increased micro batch sizes, moved retriever to GPU, increased workers
 - `case_graph/grpo_adapter.py` - added defensive handling for malformed policy outputs (fixes string chunk error)
+- `case_graph/llm.py` - added retry logic with exponential backoff for API timeouts, increased default timeout from 120s to 180s
+
+## API Reliability Improvements
+
+### Automatic Retry on Transient Failures
+
+Added retry logic to handle transient API failures (HTTP 522 connection timeouts, 5xx server errors):
+- **3 retries** with exponential backoff (1s, 2s, 4s between attempts)
+- Retries on: HTTP 5xx errors, HTTP 522 (connection timeout), network errors
+- No retry on: HTTP 4xx errors (client errors like invalid API key)
+
+### Increased Timeout
+
+Default timeout increased from 120s to 180s to handle complex judge prompts. Override with:
+```bash
+CASE_GRAPH_TIMEOUT=240 ./scripts/run_online_memory_grpo.sh
+```
+
+### Common API Issues
+
+**HTTP 522 Connection Timeout:**
+- API provider overloaded or network congestion
+- Now handled automatically with retries
+- If persistent, check API provider status or try different provider
+
+**Rate Limiting:**
+- Set `CASE_GRAPH_TIMEOUT=300` for slower API providers
+- Reduce `reward_num_workers` to 4 if hitting rate limits
+- Use local vLLM server instead of cloud APIs for judge calls

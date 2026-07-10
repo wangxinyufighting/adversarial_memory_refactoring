@@ -78,6 +78,12 @@ class AnswerEquivalenceJudge:
                 "method": "string_match",
                 "reason": "The candidate answer matches the gold answer after normalization.",
             }
+        if _is_unknown_answer(candidate_answer):
+            return {
+                "correct": False,
+                "method": "string_match",
+                "reason": "The candidate answer is UNKNOWN or empty.",
+            }
         if not self.use_llm:
             return {
                 "correct": False,
@@ -159,6 +165,23 @@ def _answers_match(gold_answer: str, candidate_answer: str) -> bool:
     if gold == candidate:
         return True
     return len(gold) >= 4 and (gold in candidate or candidate in gold)
+
+
+def _is_unknown_answer(value: str) -> bool:
+    normalized = _normalize_answer(value)
+    if not normalized:
+        return True
+    return normalized in {
+        "unknown",
+        "unk",
+        "n a",
+        "na",
+        "none",
+        "not known",
+        "i don t know",
+        "cannot determine",
+        "not enough information",
+    }
 
 
 def _normalize_answer(value: str) -> str:

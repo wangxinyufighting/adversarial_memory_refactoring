@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from .baseline import AnswerEquivalenceJudge, JsonClient
+from .baseline import AnswerEquivalenceJudge, JsonClient, _answers_match
 from .llm import OpenAIChatClient
 from .retriever import FrozenBM25Retriever, MemoryStore, RetrievalHit
 
@@ -135,15 +135,34 @@ def run_initial_defense(
     retriever: Optional[FrozenBM25Retriever] = None,
     top_k: int = 5,
     min_score: float = 0.0,
+    use_answer_agent: bool = True,
 ) -> InitialDefenseOutcome:
     retriever = retriever or FrozenBM25Retriever(memory_store)
     hits = retriever.retrieve(question, top_k=top_k, min_score=min_score)
-    answer_result = answer_agent.answer(question, hits)
-    judge_result = judge.judge(
-        question=question,
-        gold_answer=gold_answer,
-        candidate_answer=str(answer_result.get("answer", "")),
-    )
+    if use_answer_agent:
+        answer_result = answer_agent.answer(question, hits)
+        judge_result = judge.judge(
+            question=question,
+            gold_answer=gold_answer,
+            candidate_answer=str(answer_result.get("answer", "")),
+        )
+    else:
+        matching_hit_ids = [
+            hit.memory_id
+            for hit in hits
+            if _answers_match(gold_answer, _hit_evidence_text(hit))
+        ]
+        correct_by_presence = bool(matching_hit_ids)
+        answer_result = {
+            "answer": gold_answer if correct_by_presence else "UNKNOWN",
+            "reason": "Initial defense used deterministic retrieved-memory answer presence.",
+            "evidence_memory_ids": matching_hit_ids,
+        }
+        judge_result = {
+            "correct": correct_by_presence,
+            "method": "retrieved_answer_presence",
+            "reason": "Gold answer was checked against retrieved memory text without an LLM call.",
+        }
     correct = bool(judge_result.get("correct", False))
     bound_memory_ids: List[str] = []
 
@@ -173,3 +192,15 @@ def run_initial_defense(
         judge=judge_result,
         bound_memory_ids=bound_memory_ids,
     )
+
+
+def _hit_evidence_text(hit: RetrievalHit) -> str:
+    metadata = hit.metadata or {}
+    parts = [hit.content]
+    for key in ("facts", "fact", "summary", "keywords"):
+        value = metadata.get(key)
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value)
+        elif value is not None:
+            parts.append(str(value))
+    return "\n".join(part for part in parts if part)

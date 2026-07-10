@@ -167,6 +167,10 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
     if args.reward_mode is not None:
         base_config["reward_config"] = dict(base_config.get("reward_config", {}))
         base_config["reward_config"]["mode"] = args.reward_mode
+    if args.initial_defense_use_llm:
+        base_config["initial_defense_use_llm"] = True
+    if args.initial_defense_judge_use_llm:
+        base_config["initial_defense_judge_use_llm"] = True
     if args.skip_retriever_preflight:
         base_config["retriever_preflight"] = False
     if args.attacker_llm is not None:
@@ -296,6 +300,25 @@ def validate_training_scale(config: dict, num_graphs: int) -> None:
         warnings.append(
             f"total_optimizer_steps={total_optimizer_steps} is short; increase episodes_per_case, num_epochs, or graph count."
         )
+    if num_graphs < train_batch_size:
+        warnings.append(
+            f"num_graphs={num_graphs} is smaller than train_batch_size={train_batch_size}; "
+            "multiple stale states from the same case can enter one batch. Use more training cases for formal runs."
+        )
+    if num_graphs < 20:
+        warnings.append(
+            f"num_graphs={num_graphs} is too small to establish policy generalization; "
+            "formal training should use a substantially larger case split and held-out validation cases."
+        )
+    reward_config = dict(config.get("reward_config", {}) or {})
+    if float(reward_config.get("min_relation_overlap", 0.0)) < 0.5:
+        warnings.append("reward min_relation_overlap is permissive; use >=0.5 to reject answer-word memories.")
+    if float(reward_config.get("min_fact_overlap", 0.0)) < 0.5:
+        warnings.append("reward min_fact_overlap is permissive; use >=0.5 for fact completeness.")
+    if retriever_config.get("device") == "cuda" and _as_int(config.get("n_gpus_per_node"), 1) == 1:
+        warnings.append(
+            "retriever.device=cuda shares the only GPU with actor/vLLM and may load one model per reward worker; use cpu."
+        )
 
     for message in warnings:
         logger.warning("Training scale check: %s", message)
@@ -368,6 +391,16 @@ def main():
     parser.add_argument("--retriever-max-length", type=int, help="Max token length for dense retriever encoding")
     parser.add_argument("--skip-retriever-preflight", action="store_true", help="Skip loading the configured retriever before Ray starts")
     parser.add_argument("--reward-mode", choices=["semantic_complete", "evaluation_aligned"], help="Reward evaluator mode")
+    parser.add_argument(
+        "--initial-defense-use-llm",
+        action="store_true",
+        help="Allow initial-defense retrieved-memory answering to call the configured LLM API",
+    )
+    parser.add_argument(
+        "--initial-defense-judge-use-llm",
+        action="store_true",
+        help="Allow initial-defense answer equivalence judging to call the configured LLM API",
+    )
     parser.add_argument("--memory-trajectory-dir", help="Directory name under output-dir for per-step M_t snapshots")
     parser.add_argument(
         "--disable-memory-trajectory",

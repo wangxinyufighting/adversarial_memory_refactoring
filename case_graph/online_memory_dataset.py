@@ -139,6 +139,7 @@ class OnlineMemoryEnvironment:
                 "question": attack.question,
                 "answer": attack.answer,
                 "golden_facts": attack.golden_facts,
+                "route_evidence": attack.route,
             }
 
         except Exception as e:
@@ -281,7 +282,9 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
             ),
             attacker=build_attacker_from_config(config),
             answer_agent=RetrievedMemoryAnswerAgent(),
-            judge=AnswerEquivalenceJudge(),
+            judge=AnswerEquivalenceJudge(
+                use_llm=_config_bool(config.get("initial_defense_judge_use_llm"), False)
+            ),
             config=AlgorithmConfig(
                 tau=config.get("tau", 0.55),
                 top_k=config.get("top_k", 8),
@@ -291,6 +294,7 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
                 commit_threshold=config.get("commit_threshold", 1.0),
                 retriever_config=retriever_config_from_mapping(config),
                 reward_config=dict(config.get("reward", config.get("reward_config", {})) or {}),
+                initial_defense_use_llm=_config_bool(config.get("initial_defense_use_llm"), False),
             ),
             initial_memory_dir=initial_memory_dir,
         )

@@ -48,6 +48,7 @@ class AlgorithmConfig:
     exp_name: str = "default"
     retriever_config: Dict[str, Any] = field(default_factory=dict)
     reward_config: Dict[str, Any] = field(default_factory=dict)
+    initial_defense_use_llm: bool = True
 
 
 def prepare_refactor_state(
@@ -68,6 +69,7 @@ def prepare_refactor_state(
     answer = str(attack.get("answer") or attack.get("gold_answer") or "")
     case_id = str(attack.get("case_id", ""))
     golden_facts = attack.get("golden_facts", [])
+    route_evidence = attack.get("route_evidence") or attack.get("route") or {}
 
     if not question or not answer:
         raise ValueError("Each attack must contain question and answer.")
@@ -85,6 +87,7 @@ def prepare_refactor_state(
         retriever=build_memory_retriever(retriever_config, memory_store),
         top_k=config.top_k,
         min_score=config.min_score,
+        use_answer_agent=config.initial_defense_use_llm,
     )
 
     if initial.correct:
@@ -116,6 +119,7 @@ def prepare_refactor_state(
         "question": question,
         "answer": answer,
         "golden_facts": golden_facts,
+        "route_evidence": route_evidence,
         "current_memory": {"memories": [chunk.to_dict() for chunk in memory_store.chunks]},
         "action": decision.action,
         "selected_memory_ids": decision.selected_memory_ids,

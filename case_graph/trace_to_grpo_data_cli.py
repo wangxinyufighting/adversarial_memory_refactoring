@@ -65,6 +65,12 @@ def trace_to_grpo_states(
         attack = attack_lookup.get(key, {})
         answer = step.get("answer") or attack.get("answer") or attack.get("gold_answer")
         golden_facts = step.get("golden_facts") or attack.get("golden_facts", [])
+        route_evidence = (
+            step.get("route_evidence")
+            or attack.get("route_evidence")
+            or attack.get("route")
+            or {}
+        )
         if not answer:
             raise ValueError(f"Missing answer for GRPO state: case_id={key[0]} question={key[1]}")
 
@@ -76,6 +82,7 @@ def trace_to_grpo_states(
                 "question": step.get("question", ""),
                 "answer": answer,
                 "golden_facts": golden_facts,
+                "route_evidence": route_evidence,
                 "action": decision.get("action", ""),
                 "selected_memory_ids": decision.get("selected_memory_ids", []),
                 "regression_questions": step.get("regression_questions", []),

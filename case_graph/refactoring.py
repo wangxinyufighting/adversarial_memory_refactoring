@@ -597,7 +597,11 @@ def compute_reward(
     current_part = weights.current_correct if evaluation.current_test.correct else weights.current_wrong
     completeness_part = weights.completeness if complete else -weights.completeness_missing
     grounded_part = weights.grounded * grounded_score
-    regression_part = weights.regression_accuracy * evaluation.regression_accuracy
+    regression_part = (
+        weights.regression_accuracy * evaluation.regression_accuracy
+        if evaluation.regression_tests
+        else 0.0
+    )
     failure_part = -weights.regression_failure * evaluation.failed_regression_count
     chunk_part = -weights.chunk_count * len(proposal.new_chunks)
     token_count = sum(len(_reward_tokens(chunk.content)) for chunk in proposal.new_chunks)

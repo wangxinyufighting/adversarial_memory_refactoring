@@ -18,6 +18,8 @@ top_k: 8
 top_k_points: 32
 regression_sample_size: 12
 commit_threshold: 1.0  # Commit only if completeness-gated reward is clearly positive
+initial_defense_use_llm: false  # Online training should not call answer-agent APIs in the dataloader.
+initial_defense_judge_use_llm: false  # Keep online dataloader off external judge APIs.
 
 # UnifiedMem-style non graph-based retrieval
 retriever:
@@ -28,7 +30,7 @@ retriever:
   top_k_points: 32
   max_length: 256
   fields: ["facts", "summary", "keywords", "content"]
-  device: cuda  # Move to GPU for faster reward computation
+  device: cpu  # Avoid loading one Contriever copy per reward worker onto the actor/vLLM GPU.
   require_model: true  # Formal training should fail fast instead of falling back to hash retrieval.
 
 # Reward shaping. Default avoids per-rollout LLM calls but checks relation/fact
@@ -36,9 +38,12 @@ retriever:
 # agent + judge inside the reward worker.
 reward_config:
   mode: semantic_complete
-  min_relation_overlap: 0.25
-  min_fact_overlap: 0.25
-  min_non_answer_tokens: 3
+  min_relation_overlap: 0.50
+  min_fact_overlap: 0.50
+  min_non_answer_tokens: 5
+  min_structured_entity_coverage: 0.80
+  min_structured_relation_coverage: 0.50
+  min_qualifier_overlap: 0.50
   weights:
     current_correct: 3.0
     current_wrong: -3.0
@@ -47,11 +52,11 @@ reward_config:
     grounded: 1.0
     regression_accuracy: 1.25
     regression_failure: 2.0
-    chunk_count: 0.2
-    tokens_per_100: 0.15
-    duplicate: 0.5
+    chunk_count: 0.3
+    tokens_per_100: 0.35
+    duplicate: 0.75
     answer_only: 1.5
-    raw_copy: 0.5
+    raw_copy: 1.0
 
 # Attack generation
 routing_policy: "random_walk"
@@ -62,7 +67,7 @@ routing_seed_offset: 10000
 max_attack_attempts: 20
 attacker_llm: "/mnt/local2/wxy/models/Qwen3-0.6B"  # Model name that vLLM server serves
 attacker_api_base: "http://localhost:8003/v1"  # Local vLLM server endpoint
-attacker_api_key: "dyz1029"  # API key for local vLLM server
+attacker_api_key: ""  # Set ATTACKER_API_KEY at runtime when the local server requires authentication.
 
 # Model
 model_dtype: bfloat16  # Required for Flash Attention 2; use float16 if your GPU lacks bf16.
