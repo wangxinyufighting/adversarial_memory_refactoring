@@ -26,6 +26,7 @@ set -euo pipefail
 #   CASE_GRAPH_MAX_OUTPUT_TOKENS   Max output tokens per extraction call. Defaults to 1200.
 #   EXTRACTION_CACHE_PATH          Persistent extraction cache path. Defaults to OUTPUT_DIR/extraction_cache.json.
 #   LIMIT                 Number of cases to process.
+#   START_INDEX           One-based first case index. Defaults to 1.
 #   INCLUDE_ASSISTANT=1   Include assistant turns in chunks. Default keeps user turns only.
 #   OMIT_RAW_CHUNKS=1     Omit raw session text from graph JSON. Default keeps it for verification.
 
@@ -33,6 +34,10 @@ INPUT_PATH="${1:-data/longmemeval/longmemeval_s_cleaned.json}"
 OUTPUT_DIR="${2:-outputs/case_graphs}"
 
 ARGS=(--input "$INPUT_PATH" --output-dir "$OUTPUT_DIR")
+
+if [[ -n "${START_INDEX:-}" ]]; then
+  ARGS+=(--start-index "$START_INDEX")
+fi
 
 if [[ -n "${LIMIT:-}" ]]; then
   ARGS+=(--limit "$LIMIT")

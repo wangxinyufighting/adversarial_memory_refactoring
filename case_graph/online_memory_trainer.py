@@ -36,6 +36,7 @@ class OnlineMemoryTrainer:
         model_path: str,
         graph_files: List[str],
         output_dir: str,
+        val_graph_files: Optional[List[str]] = None,
         initial_memory_dir: Optional[str] = None,
     ):
         self.config = config
@@ -43,6 +44,7 @@ class OnlineMemoryTrainer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.initial_memory_dir = initial_memory_dir
+        self.val_graph_files = list(val_graph_files or [])
         self.config.setdefault("output_dir", str(self.output_dir))
 
         # Initialize dataset
@@ -90,6 +92,7 @@ class OnlineMemoryTrainer:
 
             # Write dataset config to a temp file that our custom dataset will read
             dataset_config_file = self.output_dir / "dataset_config.json"
+            val_dataset_config_file = self.output_dir / "val_dataset_config.json"
 
             # Get graph file paths from the dataset's environment
             graph_file_paths = []
@@ -115,6 +118,26 @@ class OnlineMemoryTrainer:
             with open(dataset_config_file, "w") as f:
                 json.dump(dataset_config, f, indent=2)
 
+            val_dataset_config_path = dataset_config_file
+            if self.val_graph_files:
+                val_runtime_config = dict(dataset_runtime_config)
+                val_runtime_config["max_questions_per_case"] = int(
+                    self.config.get("validation_questions_per_case", 20)
+                )
+                val_runtime_config["episodes_per_case"] = val_runtime_config["max_questions_per_case"]
+                val_runtime_config["memory_trajectory_enabled"] = False
+                val_dataset_config = {
+                    "graph_files": self.val_graph_files,
+                    "config": val_runtime_config,
+                    "initial_memory_dir": None,
+                    "dataset_config_file": str(val_dataset_config_file),
+                }
+                with open(val_dataset_config_file, "w") as f:
+                    json.dump(val_dataset_config, f, indent=2)
+                val_dataset_config_path = val_dataset_config_file
+            else:
+                logger.warning("No held-out validation graphs configured; validation reuses training cases.")
+
             logger.info(f"Dataset config saved to {dataset_config_file}")
 
             # Convert to absolute path string for verl
@@ -134,7 +157,7 @@ class OnlineMemoryTrainer:
                 f"algorithm.use_kl_in_reward={self.config.get('use_kl_in_reward', False)}",
                 # Data - use custom dataset class
                 f"data.train_files={dataset_config_path}",
-                f"data.val_files={dataset_config_path}",
+                f"data.val_files={str(val_dataset_config_path.resolve())}",
                 f"data.train_batch_size={self.config.get('train_batch_size', 16)}",
                 f"data.val_batch_size={self.config.get('train_batch_size', 16)}",
                 f"data.max_prompt_length={self.config.get('max_prompt_length', 8192)}",
@@ -198,6 +221,8 @@ class OnlineMemoryTrainer:
             # Cleanup
             if dataset_config_file.exists():
                 dataset_config_file.unlink()
+            if val_dataset_config_file.exists():
+                val_dataset_config_file.unlink()
 
         except subprocess.CalledProcessError as e:
             logger.error(f"verl training process failed with exit code {e.returncode}")

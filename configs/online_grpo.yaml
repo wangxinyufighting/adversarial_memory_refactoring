@@ -1,7 +1,7 @@
 # Online GRPO Training Configuration
 
 # Training
-num_epochs: 8
+num_epochs: 1
 train_batch_size: 16
 ppo_mini_batch_size: 8
 rollout_n: 8
@@ -12,7 +12,14 @@ ppo_micro_batch_size_per_gpu: 4  # Process 4 samples at once during training
 log_prob_micro_batch_size_per_gpu: 4  # Process 4 samples at once during rollout
 
 # Environment
-episodes_per_case: 1000
+episodes_per_case: 200  # Backward-compatible virtual length.
+max_questions_per_case: 200
+coverage_threshold: 0.98
+critical_coverage_threshold: 1.0
+training_probe_window: 12
+validation_questions_per_case: 20
+coverage_route_attempts: 16
+coverage_random_exploration_ratio: 0.15
 tau: 0.55  # Dense add/merge similarity threshold
 top_k: 8
 top_k_points: 32
@@ -57,6 +64,8 @@ reward_config:
     duplicate: 0.75
     answer_only: 1.5
     raw_copy: 1.0
+    coverage_gain: 1.5
+    critical_coverage_gain: 1.0
 
 # Attack generation
 routing_policy: "random_walk"
@@ -134,6 +143,6 @@ verl:
     logger: ["console", "wandb"]
     n_gpus_per_node: 1
     nnodes: 1
-    total_epochs: 8
+    total_epochs: 1
     save_freq: 500
     test_freq: 500

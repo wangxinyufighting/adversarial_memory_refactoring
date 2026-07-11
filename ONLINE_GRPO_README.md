@@ -81,7 +81,10 @@ tau: 0.55                   # Add/merge similarity threshold
 top_k: 8                    # Retrieval top-K
 top_k_points: 32            # Dense flattened retrieval candidates
 regression_sample_size: 12  # Regression test sample size
-episodes_per_case: 1000     # Episodes per case graph
+max_questions_per_case: 200 # Adaptive per-case upper bound
+coverage_threshold: 0.98
+critical_coverage_threshold: 1.0
+training_probe_window: 12
 commit_threshold: 1.0       # Commit only clearly positive complete memories
 ```
 
@@ -90,7 +93,7 @@ commit_threshold: 1.0       # Commit only clearly positive complete memories
 rollout_n: 8                # N proposals per state (GRPO)
 train_batch_size: 16        # Batch size
 ppo_mini_batch_size: 8      # PPO mini-batch size
-num_epochs: 8               # Training epochs
+num_epochs: 1               # One adaptive construction pass over training cases
 seed: 42                    # Random seed
 ```
 

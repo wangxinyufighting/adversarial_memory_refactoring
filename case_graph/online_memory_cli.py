@@ -124,6 +124,15 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["regression_sample_size"] = args.regression_sample_size
     if args.episodes_per_case is not None:
         base_config["episodes_per_case"] = args.episodes_per_case
+    if args.max_questions_per_case is not None:
+        base_config["max_questions_per_case"] = args.max_questions_per_case
+        base_config["episodes_per_case"] = args.max_questions_per_case
+    if args.coverage_threshold is not None:
+        base_config["coverage_threshold"] = args.coverage_threshold
+    if args.critical_coverage_threshold is not None:
+        base_config["critical_coverage_threshold"] = args.critical_coverage_threshold
+    if args.training_probe_window is not None:
+        base_config["training_probe_window"] = args.training_probe_window
     if args.seed is not None:
         base_config["seed"] = args.seed
     if args.max_prompt_length is not None:
@@ -243,7 +252,9 @@ def validate_training_scale(config: dict, num_graphs: int) -> None:
     rollout_n = _as_int(config.get("rollout_n"), 8)
     ppo_mini_batch_size = _as_int(config.get("ppo_mini_batch_size"), 8)
     num_epochs = _as_int(config.get("num_epochs"), 8)
-    episodes_per_case = _as_int(config.get("episodes_per_case"), 1000)
+    episodes_per_case = _as_int(
+        config.get("max_questions_per_case", config.get("episodes_per_case")), 200
+    )
     regression_sample_size = _as_int(config.get("regression_sample_size"), 12)
     max_response_length = _as_int(config.get("max_response_length"), 1024)
     top_k = _as_int(config.get("top_k"), 8)
@@ -271,8 +282,8 @@ def validate_training_scale(config: dict, num_graphs: int) -> None:
     )
 
     warnings = []
-    if num_epochs < 6:
-        warnings.append(f"num_epochs={num_epochs} is closer to a smoke run; use >=6 for stable online memory training.")
+    if num_epochs < 1:
+        warnings.append("num_epochs must be at least 1.")
     if train_batch_size < 8:
         warnings.append(f"train_batch_size={train_batch_size} is small; use >=8, preferably 16 on A6000/Qwen3-0.6B.")
     if ppo_mini_batch_size < 4:
@@ -343,6 +354,10 @@ def main():
         help="Directory containing case graph JSON files or single graph file"
     )
     parser.add_argument(
+        "--val-graphs",
+        help="Held-out validation CaseGraph directory or file",
+    )
+    parser.add_argument(
         "--model-path",
         required=True,
         help="Path to base model (e.g., Qwen/Qwen2.5-0.5B-Instruct)"
@@ -379,6 +394,10 @@ def main():
     parser.add_argument("--top-k-points", type=int, help="Top-K dense retrieval points before chunk aggregation")
     parser.add_argument("--regression-sample-size", type=int, help="Regression questions sampled for ADD actions")
     parser.add_argument("--episodes-per-case", type=int, help="Episodes per case graph")
+    parser.add_argument("--max-questions-per-case", type=int, help="Maximum adaptive construction questions per training case")
+    parser.add_argument("--coverage-threshold", type=float, help="Weighted fact coverage needed before training probes")
+    parser.add_argument("--critical-coverage-threshold", type=float, help="Critical fact coverage needed before training probes")
+    parser.add_argument("--training-probe-window", type=int, help="Consecutive successful probes needed to resolve a training case")
     parser.add_argument("--seed", type=int, help="Random seed")
     parser.add_argument("--commit-threshold", type=float, help="Minimum reward required to commit")
     parser.add_argument("--retriever-type", help="Retriever type, e.g. dense_structured or bm25")
@@ -444,6 +463,7 @@ def main():
 
     # List graph files
     graph_files = list_graph_files(args.graphs)
+    val_graph_files = list_graph_files(args.val_graphs) if args.val_graphs else None
 
     logger.info("=" * 60)
     logger.info("Online GRPO Training Configuration")
@@ -477,6 +497,7 @@ def main():
     try:
         dataset = OnlineMemoryDataset(
             graph_files=graph_files,
+            val_graph_files=val_graph_files,
             config=config,
             initial_memory_dir=args.initial_memory_dir,
         )

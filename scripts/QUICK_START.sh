@@ -136,14 +136,14 @@ OnlineMemoryDataset (PyTorch Dataset)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Training:
-  num_epochs: 8
+  num_epochs: 1
   train_batch_size: 16
   ppo_mini_batch_size: 8
   rollout_n: 8
   seed: 42
 
 Environment:
-  episodes_per_case: 1000
+  max_questions_per_case: 200
   tau: 0.55                   # Add/merge threshold
   top_k: 8                    # Retrieval
   top_k_points: 32            # Dense retrieval points

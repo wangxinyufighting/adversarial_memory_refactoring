@@ -37,6 +37,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--graphs", required=True, help="CaseGraph JSON file or directory.")
     parser.add_argument("--output-dir", required=True, help="Directory for memory_states and traces.")
     parser.add_argument("--initial-memory-dir", help="Optional per-case memory directory to warm start from.")
+    parser.add_argument(
+        "--training-config",
+        default="configs/online_grpo.yaml",
+        help="Training YAML whose reward thresholds/weights are reused for construction",
+    )
 
     parser.add_argument("--defender-api-base", default="http://localhost:8004/v1")
     parser.add_argument("--defender-served-model", default="defender-current")
@@ -80,7 +85,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--judge-max-output-tokens", type=int, default=200)
     parser.add_argument("--skip-llm-judge", action="store_true")
 
-    parser.add_argument("--episodes-per-case", type=int, default=100)
+    parser.add_argument("--episodes-per-case", type=int, default=250, help="Maximum construction questions per case")
+    parser.add_argument("--min-questions-per-case", type=int, default=20)
+    parser.add_argument("--coverage-threshold", type=float, default=0.98)
+    parser.add_argument("--critical-coverage-threshold", type=float, default=1.0)
+    parser.add_argument("--certification-questions", type=int, default=60)
+    parser.add_argument("--disable-adaptive-stopping", action="store_true")
+    parser.add_argument(
+        "--force-add",
+        action="store_true",
+        help="Debug-only: disable Merge during construction",
+    )
     parser.add_argument("--proposal-count", type=int, default=1)
     parser.add_argument("--tau", type=float, default=0.55)
     parser.add_argument("--top-k", type=int, default=8)
@@ -125,6 +140,8 @@ def main() -> None:
         defender_served_model = handle.served_model_name
 
     try:
+        reward_config = _load_training_reward_config(args.training_config)
+        reward_config["mode"] = args.reward_mode
         config = MemoryConstructionConfig(
             tau=args.tau,
             top_k=args.top_k,
@@ -132,10 +149,15 @@ def main() -> None:
             min_score=args.min_score,
             regression_sample_size=args.regression_sample_size,
             episodes_per_case=args.episodes_per_case,
+            min_questions_per_case=args.min_questions_per_case,
+            coverage_threshold=args.coverage_threshold,
+            critical_coverage_threshold=args.critical_coverage_threshold,
+            certification_questions=args.certification_questions,
+            adaptive_stopping=not args.disable_adaptive_stopping,
             proposal_count=args.proposal_count,
             commit_threshold=args.commit_threshold,
             seed=args.seed,
-            force_add=args.attacker_mode == "coverage",
+            force_add=args.force_add,
             progress_log_interval=args.progress_log_interval,
             routing_max_steps=args.routing_max_steps,
             routing_min_nodes=args.routing_min_nodes,
@@ -155,7 +177,7 @@ def main() -> None:
                     "retriever_require_model": args.retriever_require_model,
                 }
             ),
-            reward_config={"mode": args.reward_mode},
+            reward_config=reward_config,
             exp_name=args.exp_name,
         )
         defender_policy = DefenderCheckpointPolicy(
@@ -216,6 +238,15 @@ def _optional_client(
         api_key=api_key,
         timeout=timeout,
     )
+
+
+def _load_training_reward_config(path: str) -> dict:
+    config_path = Path(path)
+    if not config_path.exists():
+        logger.warning("Training config %s not found; using reward defaults.", path)
+        return {}
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    return dict(payload.get("reward_config", {}) or {})
 
 
 def _build_attacker(args: argparse.Namespace):

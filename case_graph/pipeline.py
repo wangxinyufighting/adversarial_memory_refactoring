@@ -49,6 +49,11 @@ class AlgorithmConfig:
     retriever_config: Dict[str, Any] = field(default_factory=dict)
     reward_config: Dict[str, Any] = field(default_factory=dict)
     initial_defense_use_llm: bool = True
+    coverage_threshold: float = 0.98
+    critical_coverage_threshold: float = 1.0
+    training_probe_window: int = 12
+    coverage_route_attempts: int = 16
+    coverage_random_exploration_ratio: float = 0.15
 
 
 def prepare_refactor_state(

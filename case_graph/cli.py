@@ -15,6 +15,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True, help="Directory for graph JSON outputs.")
     parser.add_argument("--limit", type=int, default=None, help="Optional number of cases to process.")
     parser.add_argument(
+        "--start-index",
+        type=int,
+        default=1,
+        help="One-based index of the first input case to process (default: 1).",
+    )
+    parser.add_argument(
         "--cache-path",
         default=None,
         help="Persistent extraction cache JSON. Defaults to <output-dir>/extraction_cache.json.",
@@ -45,6 +51,9 @@ def main() -> None:
     cache_path = Path(args.cache_path) if args.cache_path else output_dir / "extraction_cache.json"
 
     entries = json.loads(input_path.read_text(encoding="utf-8"))
+    if args.start_index < 1:
+        raise ValueError("--start-index must be >= 1")
+    entries = entries[args.start_index - 1 :]
     if args.limit is not None:
         entries = entries[: args.limit]
 

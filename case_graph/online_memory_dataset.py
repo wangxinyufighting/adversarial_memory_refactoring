@@ -19,8 +19,9 @@ import torch.utils.data
 
 from .attacker import FrozenLLMAttacker
 from .baseline import AnswerEquivalenceJudge
+from .coverage import CaseCoverageTracker, CoverageAwareRouteScheduler
 from .defense import RetrievedMemoryAnswerAgent, SuccessPool
-from .grpo_adapter import build_verl_row_online
+from .grpo_adapter import build_verl_row_online, compute_score
 from .llm import OpenAIChatClient
 from .pipeline import AlgorithmConfig, prepare_refactor_state
 from .refactoring import HighPriorityBuffer, RefactorProposal, build_sandbox_memory
@@ -69,6 +70,10 @@ class CaseMemoryState:
     success_pool: SuccessPool
     high_priority_buffer: HighPriorityBuffer
     episode_count: int = 0
+    coverage_tracker: Optional[CaseCoverageTracker] = None
+    ready: bool = False
+    completed: bool = False
+    incomplete: bool = False
 
 
 class OnlineMemoryEnvironment:
@@ -86,6 +91,11 @@ class OnlineMemoryEnvironment:
     ):
         self.graphs = graphs
         self.routing_policy = routing_policy
+        self.route_scheduler = CoverageAwareRouteScheduler(
+            routing_policy,
+            candidate_attempts=max(4, int(config.coverage_route_attempts)),
+            random_exploration_ratio=config.coverage_random_exploration_ratio,
+        )
         self.attacker = attacker
         self.answer_agent = answer_agent
         self.judge = judge
@@ -119,6 +129,7 @@ class OnlineMemoryEnvironment:
             success_pool=SuccessPool(),
             high_priority_buffer=HighPriorityBuffer(),
             episode_count=0,
+            coverage_tracker=CaseCoverageTracker.from_graph(graph),
         )
 
     def generate_episode(
@@ -132,8 +143,17 @@ class OnlineMemoryEnvironment:
 
         try:
             # 1. Generate attack from graph
-            route = self.routing_policy.select_route(case_state.graph, seed=seed)
+            route = self.route_scheduler.select_route(
+                case_state.graph,
+                tracker=case_state.coverage_tracker,
+                seed=seed,
+            )
             attack = self.attacker.generate(case_state.graph, route)
+            coverage_unit_ids = (
+                case_state.coverage_tracker.unit_ids_for_route(route)
+                if case_state.coverage_tracker is not None
+                else []
+            )
             attack_dict = {
                 "case_id": case_id,
                 "question": attack.question,
@@ -168,11 +188,37 @@ class OnlineMemoryEnvironment:
 
         if state is None:
             # Initial defense succeeded, no refactor needed
+            if case_state.coverage_tracker is not None:
+                certification = case_state.coverage_tracker.is_coverage_ready(
+                    self.config.coverage_threshold,
+                    self.config.critical_coverage_threshold,
+                )
+                case_state.coverage_tracker.record(
+                    coverage_unit_ids,
+                    success=True,
+                    certification=certification,
+                )
+                case_state.ready = (
+                    case_state.coverage_tracker.is_coverage_ready(
+                        self.config.coverage_threshold,
+                        self.config.critical_coverage_threshold,
+                    )
+                    and case_state.coverage_tracker.consecutive_certification_passes
+                    >= self.config.training_probe_window
+                )
             return None
 
         # 3. Add UID for GRPO grouping
         state["uid"] = f"{case_id}_ep{episode}"
         state["episode"] = episode
+        state["coverage_unit_ids"] = coverage_unit_ids
+        if case_state.coverage_tracker is not None:
+            route_weight = case_state.coverage_tracker.route_weight(coverage_unit_ids)
+            pending_weight = case_state.coverage_tracker.pending_weight(coverage_unit_ids)
+            state["coverage_route_weight"] = route_weight
+            state["coverage_pending_weight"] = pending_weight
+            state["coverage_critical_pending_weight"] = pending_weight
+            state["coverage_before"] = case_state.coverage_tracker.structural_coverage()
 
         return state
 
@@ -182,6 +228,8 @@ class OnlineMemoryEnvironment:
         best_proposal: RefactorProposal,
         current_question: str,
         current_answer: str = "",
+        coverage_unit_ids: Optional[List[str]] = None,
+        coverage_success: bool = True,
     ) -> None:
         """Apply winning proposal to M_t after training step."""
         # Parse case_id from uid
@@ -208,6 +256,8 @@ class OnlineMemoryEnvironment:
                 memory_ids=[chunk.memory_id for chunk in best_proposal.new_chunks],
                 metadata={"committed_from_online_training": True},
             )
+        if case_state.coverage_tracker is not None and coverage_unit_ids:
+            case_state.coverage_tracker.record(coverage_unit_ids, success=coverage_success)
 
     def record_rollback(
         self,
@@ -295,6 +345,13 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
                 retriever_config=retriever_config_from_mapping(config),
                 reward_config=dict(config.get("reward", config.get("reward_config", {})) or {}),
                 initial_defense_use_llm=_config_bool(config.get("initial_defense_use_llm"), False),
+                coverage_threshold=float(config.get("coverage_threshold", 0.98)),
+                critical_coverage_threshold=float(config.get("critical_coverage_threshold", 1.0)),
+                training_probe_window=int(config.get("training_probe_window", 12)),
+                coverage_route_attempts=int(config.get("coverage_route_attempts", 16)),
+                coverage_random_exploration_ratio=float(
+                    config.get("coverage_random_exploration_ratio", 0.15)
+                ),
             ),
             initial_memory_dir=initial_memory_dir,
         )
@@ -302,7 +359,9 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
         # Episode tracking
         self.case_rotation = 0
         self.global_seed = config.get("seed", 42)
-        self.episodes_per_case = config.get("episodes_per_case", 1000)
+        self.episodes_per_case = config.get(
+            "max_questions_per_case", config.get("episodes_per_case", 200)
+        )
         self.max_attack_attempts = config.get("max_attack_attempts", 20)
         self.routing_seed_offset = config.get("routing_seed_offset", 0)
         self.commit_threshold = config.get("commit_threshold", 1.0)
@@ -348,14 +407,26 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
         last_case_id = "unknown"
 
         for attempt in range(total_attempts):
-            # Round-robin case selection
-            case_idx = self.case_rotation % len(self.graphs)
+            active_graphs = [
+                graph
+                for graph in self.graphs
+                if not self.env.case_states[str(graph.get("case_id", "unknown"))].completed
+                and not self.env.case_states[str(graph.get("case_id", "unknown"))].incomplete
+            ]
+            if not active_graphs:
+                raise RuntimeError("All online memory cases are complete or exhausted.")
+
+            # Round-robin selection over unresolved cases.
+            case_idx = self.case_rotation % len(active_graphs)
             self.case_rotation += 1
 
-            case_graph = self.graphs[case_idx]
+            case_graph = active_graphs[case_idx]
             case_id = str(case_graph.get("case_id", "unknown"))
             last_case_id = case_id
             case_state = self.env.case_states[case_id]
+            if case_state.episode_count >= self.episodes_per_case:
+                case_state.incomplete = True
+                continue
             episode = case_state.episode_count
             case_state.episode_count += 1
 
@@ -431,6 +502,7 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
                         "all_rewards": rewards,
                     },
                 )
+                self._record_coverage_result(state, success=False)
                 logger.info("Rolled back %s: best reward %.3f", uid, best["reward"])
                 self._save_memory_trajectory_step(
                     event="rollback",
@@ -456,6 +528,7 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
                         "error": str(exc),
                     },
                 )
+                self._record_coverage_result(state, success=False)
                 logger.warning("Failed to parse winning proposal for %s: %s", uid, exc)
                 self._save_memory_trajectory_step(
                     event="rollback",
@@ -468,7 +541,37 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
                 )
                 continue
 
-            self.env.commit_memory_update(uid, proposal, question, current_answer=answer)
+            live_reward = self._live_reward(best["solution"], state)
+            if live_reward is not None and live_reward <= self.commit_threshold:
+                self.env.record_rollback(
+                    uid,
+                    question,
+                    answer,
+                    {
+                        "reason": "live_memory_revalidation_failed",
+                        "rollout_reward": best["reward"],
+                        "live_reward": live_reward,
+                    },
+                )
+                self._record_coverage_result(state, success=False)
+                self._save_memory_trajectory_step(
+                    event="rollback",
+                    uid=uid,
+                    state=state,
+                    rewards=rewards,
+                    best_reward=live_reward,
+                    reason="live_memory_revalidation_failed",
+                )
+                continue
+
+            coverage_unit_ids = [str(item) for item in state.get("coverage_unit_ids", [])]
+            commit_kwargs = {"current_answer": answer}
+            if coverage_unit_ids:
+                commit_kwargs.update(
+                    coverage_unit_ids=coverage_unit_ids,
+                    coverage_success=True,
+                )
+            self.env.commit_memory_update(uid, proposal, question, **commit_kwargs)
             logger.info(
                 "Committed %s: reward %.3f, chunks=%d",
                 uid,
@@ -486,7 +589,53 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
             )
 
         self.batch_commit_count += 1
+        for case_state in self.env.case_states.values():
+            if case_state.ready:
+                case_state.completed = True
         self._maybe_save_online_memory_checkpoint()
+
+    def _record_coverage_result(self, state: Dict[str, Any], success: bool) -> None:
+        case_id = str(state.get("case_id", ""))
+        case_state = self.env.case_states.get(case_id)
+        if case_state is None or case_state.coverage_tracker is None:
+            return
+        case_state.coverage_tracker.record(
+            [str(item) for item in state.get("coverage_unit_ids", [])],
+            success=success,
+        )
+
+    def _live_reward(self, solution: str, state: Dict[str, Any]) -> Optional[float]:
+        if "current_memory" not in state or "reward_config" not in state:
+            return None
+        case_id = str(state.get("case_id", ""))
+        case_state = self.env.case_states.get(case_id)
+        if case_state is None or not isinstance(case_state.memory_store, MemoryStore):
+            return None
+        selected_ids = [str(item) for item in state.get("selected_memory_ids", [])]
+        live_ids = {chunk.memory_id for chunk in case_state.memory_store.chunks}
+        if state.get("action") == "merge" and not set(selected_ids).issubset(live_ids):
+            return float("-inf")
+        live_state = dict(state)
+        live_state["current_memory"] = {
+            "memories": [chunk.to_dict() for chunk in case_state.memory_store.chunks]
+        }
+        if case_state.coverage_tracker is not None:
+            unit_ids = [str(item) for item in state.get("coverage_unit_ids", [])]
+            live_state["coverage_route_weight"] = case_state.coverage_tracker.route_weight(unit_ids)
+            live_state["coverage_pending_weight"] = case_state.coverage_tracker.pending_weight(unit_ids)
+            live_state["coverage_critical_pending_weight"] = live_state["coverage_pending_weight"]
+            live_state["coverage_before"] = case_state.coverage_tracker.structural_coverage()
+        payload = compute_score(
+            data_source="memory_refactor_online",
+            solution_str=solution,
+            ground_truth=live_state,
+        )
+        return float(payload.get("score", 0.0))
+
+    def should_stop_training(self) -> bool:
+        return bool(self.env.case_states) and all(
+            state.completed or state.incomplete for state in self.env.case_states.values()
+        )
 
     def on_train_end(self) -> None:
         """Persist final online memory state when the trainer exits."""
@@ -704,6 +853,11 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
             "memory_chunk_counts": {
                 case_id: len(case_state.memory_store.chunks)
                 for case_id, case_state in self.env.case_states.items()
+            },
+            "coverage_states": {
+                case_id: case_state.coverage_tracker.snapshot()
+                for case_id, case_state in self.env.case_states.items()
+                if case_state.coverage_tracker is not None
             },
             "snapshot_dir": str(step_dir),
             "memory_states_dir": str(memory_dir),

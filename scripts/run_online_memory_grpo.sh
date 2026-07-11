@@ -30,6 +30,8 @@ args=(
   --config "${CONFIG_FILE}"
 )
 
+[[ -n "${VAL_GRAPHS_DIR:-}" ]] && args+=(--val-graphs "${VAL_GRAPHS_DIR}")
+
 [[ -n "${ROLLOUT_N:-}" ]] && args+=(--rollout-n "${ROLLOUT_N}")
 [[ -n "${TRAIN_BATCH_SIZE:-}" ]] && args+=(--train-batch-size "${TRAIN_BATCH_SIZE}")
 [[ -n "${PPO_MINI_BATCH_SIZE:-}" ]] && args+=(--ppo-mini-batch-size "${PPO_MINI_BATCH_SIZE}")
@@ -41,6 +43,10 @@ args=(
 [[ -n "${TOP_K_POINTS:-}" ]] && args+=(--top-k-points "${TOP_K_POINTS}")
 [[ -n "${REGRESSION_SAMPLE_SIZE:-}" ]] && args+=(--regression-sample-size "${REGRESSION_SAMPLE_SIZE}")
 [[ -n "${EPISODES_PER_CASE:-}" ]] && args+=(--episodes-per-case "${EPISODES_PER_CASE}")
+[[ -n "${MAX_QUESTIONS_PER_CASE:-}" ]] && args+=(--max-questions-per-case "${MAX_QUESTIONS_PER_CASE}")
+[[ -n "${COVERAGE_THRESHOLD:-}" ]] && args+=(--coverage-threshold "${COVERAGE_THRESHOLD}")
+[[ -n "${CRITICAL_COVERAGE_THRESHOLD:-}" ]] && args+=(--critical-coverage-threshold "${CRITICAL_COVERAGE_THRESHOLD}")
+[[ -n "${TRAINING_PROBE_WINDOW:-}" ]] && args+=(--training-probe-window "${TRAINING_PROBE_WINDOW}")
 [[ -n "${COMMIT_THRESHOLD:-}" ]] && args+=(--commit-threshold "${COMMIT_THRESHOLD}")
 [[ -n "${RETRIEVER_TYPE:-}" ]] && args+=(--retriever-type "${RETRIEVER_TYPE}")
 [[ -n "${RETRIEVER_MODEL_NAME:-}" ]] && args+=(--retriever-model-name "${RETRIEVER_MODEL_NAME}")

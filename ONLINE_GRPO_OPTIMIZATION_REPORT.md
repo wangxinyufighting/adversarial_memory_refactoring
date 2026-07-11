@@ -179,11 +179,14 @@ reward_config:
 `configs/online_grpo.yaml` 不再是 smoke-test 级别：
 
 ```yaml
-num_epochs: 8
+num_epochs: 1
 train_batch_size: 16
 ppo_mini_batch_size: 8
 rollout_n: 8
-episodes_per_case: 1000
+max_questions_per_case: 200
+coverage_threshold: 0.98
+critical_coverage_threshold: 1.0
+training_probe_window: 12
 top_k: 8
 top_k_points: 32
 regression_sample_size: 12
@@ -196,7 +199,8 @@ save_freq: 500
 
 - `rollout_n=8` 提高 GRPO group 内候选质量。
 - `train_batch_size=16/ppo_mini_batch_size=8` 避免 4-sample smoke run 的高方差。
-- `episodes_per_case=1000` 让每个 case 有更充分的 `M_t` 轨迹探索。
+- `max_questions_per_case=200` 只是每个 case 的安全上限；case 达到 coverage 和 probe 条件后会提前退出 active pool。
+- `num_epochs=1` 避免 300 个训练 case 被固定重复 8 轮；实际训练规模由 active-case completion 和数据量共同决定。
 - `regression_sample_size=12` 降低 merge 时遗忘旧 memory 的概率。
 - `top_k=8/top_k_points=32` 适配 fact-level dense retrieval。
 - `commit_threshold=1.0` 避免 completeness 边缘通过的 rollout 被写入 `M_t`。
@@ -265,6 +269,35 @@ REWARD_MODE=evaluation_aligned ./scripts/run_online_memory_grpo.sh
 注意：`evaluation_aligned` 会在 reward worker 内调用 answer agent + judge，需要确保对应 OpenAI-compatible API 环境可用。
 
 ## Verification
+
+## Adaptive Coverage And Certification
+
+Training no longer treats a fixed question count as evidence of completeness. Each case now owns a `CaseCoverageTracker` built only from public graph relationships. The existing random-walk routing policy is unchanged, while a coverage-aware scheduler samples several random walks and prefers routes containing uncovered or previously failed units.
+
+The GRPO reward now includes `coverage_gain` and `critical_coverage_gain`, but only when the retrieved answer and structured completeness gate both pass. Before commit, the winning rollout is re-evaluated against the latest live `M_t`, preventing stale same-batch Merge proposals from overwriting newer facts.
+
+Evaluation memory construction uses an adaptive state machine:
+
+```text
+cover -> repair -> certify -> done
+```
+
+A case enters certification after weighted coverage reaches 0.98 and critical coverage reaches 1.0. It stops only after the configured number of consecutive fresh probes pass; otherwise it continues until `episodes_per_case`, now interpreted as the maximum question budget. Coverage state is written to `coverage_states/<case_id>.json`.
+
+Recommended formal split and invocation:
+
+```bash
+VAL_GRAPHS_DIR=outputs/case_graphs_val \
+MAX_QUESTIONS_PER_CASE=200 \
+./scripts/run_online_memory_grpo.sh
+
+MIN_QUESTIONS_PER_CASE=20 \
+COVERAGE_THRESHOLD=0.98 \
+CRITICAL_COVERAGE_THRESHOLD=1.0 \
+CERTIFICATION_QUESTIONS=60 \
+EPISODES_PER_CASE=250 \
+./scripts/construct_defender_memory_for_eval.sh
+```
 
 已通过相关单元测试：
 

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Protocol
 
 from case_graph.attacker import FrozenLLMAttacker
 from case_graph.baseline import AnswerEquivalenceJudge
+from case_graph.coverage import CaseCoverageTracker, CoverageAwareRouteScheduler
 from case_graph.defense import RetrievedMemoryAnswerAgent, SuccessPool
 from case_graph.evidence import route_golden_facts
 from case_graph.grpo_adapter import SYSTEM_PROMPT, build_user_prompt
@@ -56,7 +57,12 @@ class MemoryConstructionConfig:
     top_k_points: int = 24
     min_score: float = 0.0
     regression_sample_size: int = 8
-    episodes_per_case: int = 100
+    episodes_per_case: int = 250
+    min_questions_per_case: int = 20
+    coverage_threshold: float = 0.98
+    critical_coverage_threshold: float = 1.0
+    certification_questions: int = 60
+    adaptive_stopping: bool = True
     proposal_count: int = 1
     commit_threshold: float = 0.0
     seed: int = 42
@@ -102,6 +108,8 @@ class ConstructionStepTrace:
     decision: Optional[Dict[str, Any]] = None
     settlement: Optional[Dict[str, Any]] = None
     error: str = ""
+    phase: str = "cover"
+    coverage: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -115,6 +123,8 @@ class ConstructionStepTrace:
             "decision": self.decision,
             "settlement": self.settlement,
             "error": self.error,
+            "phase": self.phase,
+            "coverage": self.coverage,
         }
 
 
@@ -125,15 +135,23 @@ class CaseConstructionResult:
     success_pool: SuccessPool
     high_priority_buffer: HighPriorityBuffer
     traces: List[ConstructionStepTrace]
+    coverage_state: Dict[str, Any] = field(default_factory=dict)
+    completion_status: str = "incomplete"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "case_id": self.case_id,
-            "summary": summarize_case_traces(self.traces, self.memory_store),
+            "summary": summarize_case_traces(
+                self.traces,
+                self.memory_store,
+                completion_status=self.completion_status,
+            ),
             "final_memory": {"memories": [chunk.to_dict() for chunk in self.memory_store.chunks]},
             "success_pool": self.success_pool.to_dict(),
             "high_priority_buffer": self.high_priority_buffer.to_dict(),
             "traces": [trace.to_dict() for trace in self.traces],
+            "coverage_state": self.coverage_state,
+            "completion_status": self.completion_status,
         }
 
 
@@ -266,7 +284,11 @@ class CoverageGraphAttacker:
 
         position = self._case_positions.get(case_id, 0)
         self._case_positions[case_id] = position + 1
-        candidate = candidates[position % len(candidates)]
+        candidate = dict(candidates[position % len(candidates)])
+        candidate["question"] = _coverage_question_variant(
+            candidate,
+            variant=(position // len(candidates)) % 4,
+        )
         return AttackExample(
             case_id=case_id,
             question=candidate["question"],
@@ -310,9 +332,16 @@ class EvaluationMemoryConstructor:
             min_nodes=self.config.routing_min_nodes,
             attempts=self.config.routing_attempts,
         )
+        coverage_tracker = CaseCoverageTracker.from_graph(safe_graph)
+        route_scheduler = CoverageAwareRouteScheduler(
+            routing_policy,
+            candidate_attempts=max(8, self.config.routing_attempts * 2),
+            random_exploration_ratio=0.15,
+        )
         algorithm_config = self.config.algorithm_config(memory_archive_dir=memory_archive_dir)
         traces: List[ConstructionStepTrace] = []
         attack_failures = 0
+        completion_status = "incomplete"
         logger.info(
             "Starting case %s: episodes=%d initial_memory_chunks=%d",
             case_id,
@@ -337,11 +366,16 @@ class EvaluationMemoryConstructor:
                     len(memory_store.chunks),
                 )
             try:
-                route = routing_policy.select_route(safe_graph, seed=seed)
+                route = route_scheduler.select_route(safe_graph, coverage_tracker, seed=seed)
                 route_payload = route.to_dict()
                 attack = self.attacker.generate(safe_graph, route)
                 attack_dict = attack.to_dict()
                 attack_dict["case_id"] = case_id
+                attack_dict["route_evidence"] = attack_dict.get("route", {})
+                coverage_unit_ids = coverage_tracker.unit_ids_for_route(
+                    attack_dict.get("route", route)
+                )
+                attack_dict["coverage_unit_ids"] = coverage_unit_ids
             except Exception as exc:
                 attack_failures += 1
                 if attack_failures <= 3:
@@ -366,6 +400,14 @@ class EvaluationMemoryConstructor:
                 continue
 
             try:
+                certification_phase = bool(
+                    self.config.adaptive_stopping
+                    and episode >= self.config.min_questions_per_case
+                    and coverage_tracker.is_coverage_ready(
+                        self.config.coverage_threshold,
+                        self.config.critical_coverage_threshold,
+                    )
+                )
                 state = prepare_refactor_state(
                     attack=attack_dict,
                     memory_store=memory_store,
@@ -390,6 +432,11 @@ class EvaluationMemoryConstructor:
                 continue
 
             if state is None:
+                coverage_tracker.record(
+                    coverage_unit_ids,
+                    success=True,
+                    certification=certification_phase,
+                )
                 traces.append(
                     ConstructionStepTrace(
                         case_id=case_id,
@@ -398,6 +445,8 @@ class EvaluationMemoryConstructor:
                         question=str(attack_dict.get("question", "")),
                         answer=str(attack_dict.get("answer", "")),
                         route=attack_dict.get("route", {}),
+                        phase="certify" if certification_phase else "cover",
+                        coverage=coverage_tracker.snapshot(),
                     )
                 )
                 if should_log:
@@ -408,7 +457,30 @@ class EvaluationMemoryConstructor:
                         self.config.episodes_per_case,
                         len(memory_store.chunks),
                     )
+                if (
+                    certification_phase
+                    and coverage_tracker.consecutive_certification_passes
+                    >= self.config.certification_questions
+                ):
+                    completion_status = "done"
+                    logger.info(
+                        "Case %s certified after %d questions: coverage=%.3f",
+                        case_id,
+                        episode + 1,
+                        coverage_tracker.structural_coverage(),
+                    )
+                    break
                 continue
+
+            state["coverage_unit_ids"] = coverage_unit_ids
+            route_weight = coverage_tracker.route_weight(coverage_unit_ids)
+            pending_weight = coverage_tracker.pending_weight(coverage_unit_ids)
+            state["coverage_route_weight"] = route_weight
+            state["coverage_pending_weight"] = pending_weight
+            state["coverage_critical_pending_weight"] = pending_weight
+            state["coverage_before"] = coverage_tracker.structural_coverage()
+            if certification_phase:
+                coverage_tracker.record(coverage_unit_ids, success=False, certification=True)
 
             if self.config.force_add and state["action"] != ADD_ACTION:
                 state = _force_add_state(state, tau=self.config.tau)
@@ -465,6 +537,23 @@ class EvaluationMemoryConstructor:
                 commit_threshold=self.config.commit_threshold,
             )
             memory_store = settlement.memory_store
+            selected_evaluation = (
+                settlement.selected_result.evaluation
+                if settlement.selected_result is not None
+                else None
+            )
+            selected_judge = (
+                selected_evaluation.current_test.judge
+                if selected_evaluation is not None
+                else {}
+            ) or {}
+            coverage_success = bool(
+                settlement.committed
+                and selected_evaluation is not None
+                and selected_evaluation.current_test.correct
+                and selected_judge.get("structured_complete", selected_judge.get("complete", False))
+            )
+            coverage_tracker.record(coverage_unit_ids, success=coverage_success)
             if should_log:
                 selected_reward = (
                     settlement.selected_result.reward.reward
@@ -491,6 +580,8 @@ class EvaluationMemoryConstructor:
                     initial_defense=state.get("initial_defense", {}),
                     decision=state["decision"].to_dict(),
                     settlement=settlement.to_dict(),
+                    phase="repair" if certification_phase else "cover",
+                    coverage=coverage_tracker.snapshot(),
                 )
             )
 
@@ -500,6 +591,8 @@ class EvaluationMemoryConstructor:
             success_pool=success_pool,
             high_priority_buffer=high_priority_buffer,
             traces=traces,
+            coverage_state=coverage_tracker.snapshot(),
+            completion_status=completion_status,
         )
 
 
@@ -544,8 +637,10 @@ def construct_memories_for_graphs(
     output_path = Path(output_dir)
     memory_dir = output_path / "memory_states"
     trace_dir = output_path / "traces"
+    coverage_dir = output_path / "coverage_states"
     archive_dir = output_path / "memory_archive"
     memory_dir.mkdir(parents=True, exist_ok=True)
+    coverage_dir.mkdir(parents=True, exist_ok=True)
     if save_traces:
         trace_dir.mkdir(parents=True, exist_ok=True)
 
@@ -562,12 +657,28 @@ def construct_memories_for_graphs(
         result.memory_store.save(memory_dir / f"{case_id}.json")
         result.success_pool.save(memory_dir / f"{case_id}_pool.json")
         result.high_priority_buffer.save(memory_dir / f"{case_id}_buffer.json")
+        (coverage_dir / f"{case_id}.json").write_text(
+            json.dumps(
+                {
+                    "completion_status": result.completion_status,
+                    **result.coverage_state,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         if save_traces:
             (trace_dir / f"{case_id}.trace.json").write_text(
                 json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-        case_summary = summarize_case_traces(result.traces, result.memory_store, case_id=case_id)
+        case_summary = summarize_case_traces(
+            result.traces,
+            result.memory_store,
+            case_id=case_id,
+            completion_status=result.completion_status,
+        )
         case_summaries.append(case_summary)
         logger.info("Finished case %s: %s", case_id, case_summary)
 
@@ -575,6 +686,7 @@ def construct_memories_for_graphs(
         "case_count": len(case_summaries),
         "memory_dir": str(memory_dir),
         "cases": case_summaries,
+        "coverage_dir": str(coverage_dir),
         "totals": summarize_construction(case_summaries),
     }
     (output_path / "construction_summary.json").write_text(
@@ -596,6 +708,7 @@ def summarize_case_traces(
     traces: List[ConstructionStepTrace],
     memory_store: MemoryStore,
     case_id: str = "",
+    completion_status: str = "incomplete",
 ) -> Dict[str, Any]:
     return {
         "case_id": case_id or (traces[0].case_id if traces else ""),
@@ -607,6 +720,16 @@ def summarize_case_traces(
         "attack_generation_failed": sum(1 for trace in traces if trace.status == "attack_generation_failed"),
         "memory_chunks": len(memory_store.chunks),
         "memory_chars": sum(len(chunk.content) for chunk in memory_store.chunks),
+        "completion_status": completion_status,
+        "structural_coverage": (
+            float(traces[-1].coverage.get("structural_coverage", 0.0)) if traces else 0.0
+        ),
+        "critical_coverage": (
+            float(traces[-1].coverage.get("critical_coverage", 0.0)) if traces else 0.0
+        ),
+        "certification_passes": (
+            int(traces[-1].coverage.get("consecutive_certification_passes", 0)) if traces else 0
+        ),
         "attack_failure_errors": _top_errors(
             trace.error for trace in traces if trace.status == "attack_generation_failed"
         ),
@@ -624,7 +747,10 @@ def summarize_construction(case_summaries: List[Dict[str, Any]]) -> Dict[str, An
         "memory_chunks",
         "memory_chars",
     ]
-    return {key: sum(int(item.get(key, 0)) for item in case_summaries) for key in keys}
+    totals = {key: sum(int(item.get(key, 0)) for item in case_summaries) for key in keys}
+    totals["done_cases"] = sum(item.get("completion_status") == "done" for item in case_summaries)
+    totals["incomplete_cases"] = len(case_summaries) - totals["done_cases"]
+    return totals
 
 
 def _should_log_progress(episode: int, total: int, interval: int) -> bool:
@@ -638,7 +764,7 @@ def _should_log_progress(episode: int, total: int, interval: int) -> bool:
 
 
 def _force_add_state(state: Dict[str, Any], tau: float) -> Dict[str, Any]:
-    """Coverage construction keeps memories independent instead of compressing them."""
+    """Debug-only override that keeps memories independent instead of merging."""
     original_decision = state.get("decision")
     max_score = float(getattr(original_decision, "max_score", 0.0) or 0.0)
     similarity_report = getattr(original_decision, "similarity_report", None)
@@ -652,7 +778,7 @@ def _force_add_state(state: Dict[str, Any], tau: float) -> Dict[str, Any]:
         tau=tau,
         max_score=max_score,
         selected_memory_ids=[],
-        reason="Coverage mode forces add to preserve per-source memory coverage.",
+        reason="Debug force-add override disabled the normal Add/Merge decision.",
         similarity_report=similarity_report,
     )
     return forced
@@ -753,6 +879,38 @@ def _coverage_candidate_from_edge(
         "golden_facts": facts,
         "route": public_route_evidence(graph, route),
     }
+
+
+def _coverage_question_variant(candidate: Dict[str, Any], variant: int) -> str:
+    if variant == 0:
+        return str(candidate["question"])
+    relationships = candidate.get("route", {}).get("relationships", [])
+    if not relationships:
+        return str(candidate["question"])
+    edge = relationships[0]
+    source = str(edge.get("source", ""))
+    target = str(edge.get("target", ""))
+    relation = str(edge.get("description") or "related_to")
+    if source == "USER":
+        templates = [
+            f"Which remembered entity has the '{relation}' relation from the user?",
+            f"Identify what the user is linked to through '{relation}'.",
+            f"According to memory, the user's '{relation}' relation points to what?",
+        ]
+    elif target == "USER":
+        templates = [
+            f"Which remembered entity has the '{relation}' relation to the user?",
+            f"Identify what is linked to the user through '{relation}'.",
+            f"According to memory, what points to the user through '{relation}'?",
+        ]
+    else:
+        templates = [
+            f"What does {source} connect to through '{relation}'?",
+            f"Identify the target of {source}'s '{relation}' relation.",
+            f"According to memory, {source} has '{relation}' with what?",
+        ]
+    del target
+    return templates[(variant - 1) % len(templates)]
 
 
 def _coverage_question_for_user_edge(

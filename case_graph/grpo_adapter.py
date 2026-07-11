@@ -64,6 +64,9 @@ REWARD_KEYS = (
     "object_coverage",
     "structured_relation_coverage",
     "qualifier_coverage",
+    "coverage_gain",
+    "critical_coverage_gain",
+    "coverage_gain_score",
 )
 
 
@@ -110,6 +113,11 @@ def build_verl_row_online(state: Dict[str, Any], tokenizer=None, index: int = 0)
         "top_k_points": state.get("top_k_points", 24),
         "retriever_config": state.get("retriever_config", {}),
         "reward_config": state.get("reward_config", {}),
+        "coverage_unit_ids": state.get("coverage_unit_ids", []),
+        "coverage_route_weight": state.get("coverage_route_weight", 0.0),
+        "coverage_pending_weight": state.get("coverage_pending_weight", 0.0),
+        "coverage_critical_pending_weight": state.get("coverage_critical_pending_weight", 0.0),
+        "coverage_before": state.get("coverage_before", 0.0),
     }
 
     # Build the prompt messages
@@ -185,8 +193,29 @@ def compute_score(
         RewardWeights.from_config(reward_config.get("weights", {})),
     )
     current_judge = evaluation.current_test.judge or {}
+    structured_complete = bool(
+        current_judge.get("complete", False)
+        and current_judge.get("structured_complete", current_judge.get("complete", False))
+    )
+    coverage_route_weight = float(state.get("coverage_route_weight", 0.0) or 0.0)
+    coverage_pending_weight = float(state.get("coverage_pending_weight", 0.0) or 0.0)
+    critical_pending_weight = float(state.get("coverage_critical_pending_weight", 0.0) or 0.0)
+    coverage_gain_score = (
+        min(1.0, coverage_pending_weight / coverage_route_weight)
+        if coverage_route_weight > 0 and structured_complete and evaluation.current_test.correct
+        else 0.0
+    )
+    critical_gain_score = (
+        min(1.0, critical_pending_weight / coverage_route_weight)
+        if coverage_route_weight > 0 and structured_complete and evaluation.current_test.correct
+        else 0.0
+    )
+    weights_config = dict(reward_config.get("weights", {}) or {})
+    coverage_part = float(weights_config.get("coverage_gain", 1.5)) * coverage_gain_score
+    critical_part = float(weights_config.get("critical_coverage_gain", 1.0)) * critical_gain_score
+    total_score = reward.reward + coverage_part + critical_part
     return _reward_payload({
-        "score": reward.reward,
+        "score": total_score,
         "format_error": 0.0,
         "current_correct": float(evaluation.current_test.correct),
         "regression_accuracy": evaluation.regression_accuracy,
@@ -207,6 +236,9 @@ def compute_score(
             current_judge.get("structured_relation_coverage", 0.0)
         ),
         "qualifier_coverage": float(current_judge.get("qualifier_coverage", 0.0)),
+        "coverage_gain": coverage_part,
+        "critical_coverage_gain": critical_part,
+        "coverage_gain_score": coverage_gain_score,
         **reward.parts,
     })
 
