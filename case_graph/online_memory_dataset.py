@@ -74,6 +74,7 @@ class CaseMemoryState:
     ready: bool = False
     completed: bool = False
     incomplete: bool = False
+    budget_exhausted: bool = False
 
 
 class OnlineMemoryEnvironment:
@@ -431,6 +432,8 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
                 continue
             episode = case_state.episode_count
             case_state.episode_count += 1
+            if case_state.episode_count >= self.episodes_per_case:
+                case_state.budget_exhausted = True
 
             seed = (
                 self.global_seed
@@ -594,6 +597,8 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
         for case_state in self.env.case_states.values():
             if case_state.ready:
                 case_state.completed = True
+            elif case_state.budget_exhausted:
+                case_state.incomplete = True
         self._maybe_save_online_memory_checkpoint()
 
     def _record_coverage_result(self, state: Dict[str, Any], success: bool) -> None:
