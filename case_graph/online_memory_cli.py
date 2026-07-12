@@ -290,8 +290,10 @@ def validate_training_scale(config: dict, num_graphs: int) -> None:
         warnings.append(f"ppo_mini_batch_size={ppo_mini_batch_size} is small; use >=4, preferably 8.")
     if rollout_n < 8:
         warnings.append(f"rollout_n={rollout_n} weakens GRPO selection; use >=8.")
-    if episodes_per_case < 500:
-        warnings.append(f"episodes_per_case={episodes_per_case} gives shallow M_t exploration; use >=500, preferably 1000.")
+    if episodes_per_case < 50:
+        warnings.append(
+            f"max_questions_per_case={episodes_per_case} is a shallow adaptive budget; use 100-250."
+        )
     if regression_sample_size < 8:
         warnings.append(f"regression_sample_size={regression_sample_size} may miss forgetting; use >=8.")
     if top_k < 8:
@@ -309,7 +311,7 @@ def validate_training_scale(config: dict, num_graphs: int) -> None:
         warnings.append("retriever.require_model=false allows hash fallback; set RETRIEVER_REQUIRE_MODEL=true for formal runs.")
     if total_optimizer_steps < 1000:
         warnings.append(
-            f"total_optimizer_steps={total_optimizer_steps} is short; increase episodes_per_case, num_epochs, or graph count."
+            f"total_optimizer_steps={total_optimizer_steps} is short; increase graph count or max_questions_per_case."
         )
     if num_graphs < train_batch_size:
         warnings.append(
@@ -497,7 +499,6 @@ def main():
     try:
         dataset = OnlineMemoryDataset(
             graph_files=graph_files,
-            val_graph_files=val_graph_files,
             config=config,
             initial_memory_dir=args.initial_memory_dir,
         )
@@ -524,6 +525,7 @@ def main():
             config=config,
             model_path=args.model_path,
             graph_files=graph_files,
+            val_graph_files=val_graph_files,
             output_dir=args.output_dir,
             initial_memory_dir=args.initial_memory_dir,
         )

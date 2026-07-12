@@ -32,6 +32,7 @@ set -euo pipefail
 
 INPUT_PATH="${1:-data/longmemeval/longmemeval_s_cleaned.json}"
 OUTPUT_DIR="${2:-outputs/case_graphs}"
+PYTHON_BIN=${PYTHON_BIN:-python3}
 
 ARGS=(--input "$INPUT_PATH" --output-dir "$OUTPUT_DIR")
 
@@ -55,4 +56,4 @@ if [[ "${OMIT_RAW_CHUNKS:-0}" == "1" ]]; then
   ARGS+=(--omit-raw-chunks)
 fi
 
-python3 -m case_graph.cli "${ARGS[@]}"
+"${PYTHON_BIN}" -m case_graph.cli "${ARGS[@]}"
