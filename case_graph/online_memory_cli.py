@@ -87,7 +87,6 @@ def normalize_verl_config(config: dict) -> dict:
     _set_default(config, "nnodes", trainer.get("nnodes"))
     _set_default(config, "num_epochs", trainer.get("total_epochs"))
     _set_default(config, "save_freq", trainer.get("save_freq"))
-    _set_default(config, "checkpoint_interval", trainer.get("save_freq"))
     _set_default(config, "test_freq", trainer.get("test_freq"))
     return config
 
@@ -110,7 +109,6 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["num_epochs"] = args.total_epochs
     if args.save_freq is not None:
         base_config["save_freq"] = args.save_freq
-        base_config["checkpoint_interval"] = args.save_freq
     if args.test_freq is not None:
         base_config["test_freq"] = args.test_freq
     if args.tau is not None:
@@ -151,6 +149,8 @@ def merge_config(base_config: dict, args: argparse.Namespace) -> dict:
         base_config["rollout_tp"] = args.rollout_tp
     if args.rollout_gpu_memory_utilization is not None:
         base_config["rollout_gpu_memory_utilization"] = args.rollout_gpu_memory_utilization
+    if args.n_gpus_per_node is not None:
+        base_config["n_gpus_per_node"] = args.n_gpus_per_node
     if args.project_name is not None:
         base_config["project_name"] = args.project_name
     if args.experiment_name is not None:
@@ -263,7 +263,7 @@ def validate_training_scale(config: dict, num_graphs: int) -> None:
         config.get("top_k_points", retriever_config.get("top_k_points")),
         32,
     )
-    save_freq = _as_int(config.get("save_freq", config.get("checkpoint_interval")), 500)
+    save_freq = _as_int(config.get("save_freq"), 500)
     total_examples = max(0, num_graphs) * max(0, episodes_per_case)
     steps_per_epoch = (
         (total_examples + train_batch_size - 1) // train_batch_size
@@ -452,6 +452,11 @@ def main():
         type=float,
         help="GPU memory utilization"
     )
+    parser.add_argument(
+        "--n-gpus-per-node",
+        type=int,
+        help="Number of visible training GPUs used by verl on each node",
+    )
 
     # Logging
     parser.add_argument("--project-name", help="Wandb project name")
@@ -475,7 +480,10 @@ def main():
     logger.info(f"Output directory: {args.output_dir}")
     logger.info(f"Rollout N: {config.get('rollout_n', 8)}")
     logger.info(f"Batch size: {config.get('train_batch_size', 16)}")
-    logger.info(f"Episodes per case: {config.get('episodes_per_case', 1000)}")
+    logger.info(
+        "Max questions per case: %s",
+        config.get("max_questions_per_case", config.get("episodes_per_case", 200)),
+    )
     logger.info(f"Retriever: {config.get('retriever_type', config.get('retriever', {}).get('type', 'bm25'))}")
     logger.info(f"Reward mode: {config.get('reward_config', {}).get('mode', 'semantic_complete')}")
     logger.info(f"Seed: {config.get('seed', 42)}")

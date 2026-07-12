@@ -452,6 +452,8 @@ def retriever_config_from_mapping(config: Optional[Dict[str, Any]]) -> Dict[str,
         # replace configs/online_grpo.yaml::retriever.model_name.
         if source in config:
             result[target] = config[source]
+    if "top_k_points" in config and "retriever_top_k_points" not in config:
+        result["top_k_points"] = config["top_k_points"]
     return result
 
 

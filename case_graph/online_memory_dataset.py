@@ -366,7 +366,9 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
         self.routing_seed_offset = config.get("routing_seed_offset", 0)
         self.commit_threshold = config.get("commit_threshold", 1.0)
         self.output_dir = Path(config["output_dir"]) if config.get("output_dir") else None
-        self.checkpoint_interval = int(config.get("checkpoint_interval", 500))
+        self.checkpoint_interval = int(
+            config.get("memory_checkpoint_interval", config.get("checkpoint_interval", 500))
+        )
         self.memory_save_interval = int(config.get("memory_save_interval", 1))
         self.batch_commit_count = 0
         self.memory_trajectory_enabled = _config_bool(config.get("memory_trajectory_enabled", True))

@@ -94,7 +94,7 @@ verl 会把它当作 PyTorch Dataset 使用，每次 `__getitem__()` 动态产�
 3. 选择 reward 最高的 proposal
 4. `best_reward > commit_threshold`：解析 JSON proposal 并 commit 到 `M_t`
 5. 否则写入 `high_priority_buffer`
-6. 保存 `checkpoint_latest/memory_states`，并按 `checkpoint_interval` 保存 step checkpoint
+6. 保存 `checkpoint_latest/memory_states`，并按 `memory_checkpoint_interval` 保存 step checkpoint
 
 ## 4. 训练 Orchestrator
 

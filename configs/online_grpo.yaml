@@ -1,18 +1,20 @@
 # Online GRPO Training Configuration
 
 # Training
-num_epochs: 1
-train_batch_size: 16
-ppo_mini_batch_size: 8
+num_epochs: 10
+train_batch_size: 32
+ppo_mini_batch_size: 16
 rollout_n: 8
 temperature: 1.0
-seed: 42
+seed: 1029
 # Increase micro batch sizes for better GPU utilization
-ppo_micro_batch_size_per_gpu: 4  # Process 4 samples at once during training
-log_prob_micro_batch_size_per_gpu: 4  # Process 4 samples at once during rollout
+ppo_micro_batch_size_per_gpu: 32  # Process 32 samples at once during training
+log_prob_micro_batch_size_per_gpu: 32  # Process 32 samples at once during rollout
+adv_estimator: grpo
+use_kl_in_reward: false
+actor_lr: 1.0e-6
 
 # Environment
-episodes_per_case: 200  # Backward-compatible virtual length.
 max_questions_per_case: 200
 coverage_threshold: 0.98
 critical_coverage_threshold: 1.0
@@ -34,7 +36,6 @@ retriever:
   embedding_model: contriever
   model_name: /mnt/local2/wxy/models/contriever
   retrieval_mode: flatten
-  top_k_points: 32
   max_length: 256
   fields: ["facts", "summary", "keywords", "content"]
   device: cpu  # Avoid loading one Contriever copy per reward worker onto the actor/vLLM GPU.
@@ -82,67 +83,25 @@ attacker_api_key: ""  # Set ATTACKER_API_KEY at runtime when the local server re
 model_dtype: bfloat16  # Required for Flash Attention 2; use float16 if your GPU lacks bf16.
 rollout_dtype: bfloat16
 attn_implementation: flash_attention_2
+infer_backend: vllm
+rollout_tp: 1
+rollout_gpu_memory_utilization: 0.6
 max_prompt_length: 8192
-max_response_length: 1024
+max_response_length: 4096
 
 # Logging
 log_interval: 10
-save_freq: 500  # verl model checkpoint frequency
-checkpoint_interval: 500
-memory_save_interval: 1
+save_freq: 100  # verl model checkpoint frequency
+test_freq: 500
+memory_checkpoint_interval: 100
+memory_save_interval: 20
 memory_trajectory_enabled: true
 memory_trajectory_dir: "memory_trajectory"
 reward_num_workers: 8  # Increase parallel reward workers for faster computation
+reward_manager: naive
 use_v1: true
-
-# verl-specific settings (passed to verl trainer)
-verl:
-  algorithm:
-    adv_estimator: grpo
-    use_kl_in_reward: false
-
-  actor_rollout_ref:
-    model:
-      # model.path set via command line
-      ppo_mini_batch_size: 8
-      ppo_micro_batch_size_per_gpu: 4  # Increase from 1 to 4 for better GPU utilization
-      override_config:
-        attn_implementation: flash_attention_2
-
-    actor:
-      fsdp_config:
-        model_dtype: bfloat16
-      optim:
-        lr: 1.0e-6
-
-    rollout:
-      name: vllm
-      dtype: bfloat16
-      tensor_model_parallel_size: 1
-      gpu_memory_utilization: 0.6
-      log_prob_micro_batch_size_per_gpu: 4  # Increase from 1 to 4 for better GPU utilization
-      n: 8  # Must match rollout_n above
-      temperature: 1.0
-
-    ref:
-      fsdp_config:
-        model_dtype: bfloat16
-      log_prob_micro_batch_size_per_gpu: 4  # Increase from 1 to 4 for better GPU utilization
-
-  reward:
-    reward_manager:
-      name: naive
-    custom_reward_function:
-      # Set dynamically in code
-      path: ""
-      name: compute_score
-
-  trainer:
-    project_name: memory_refactor_grpo_online
-    experiment_name: online_training
-    logger: ["console", "wandb"]
-    n_gpus_per_node: 1
-    nnodes: 1
-    total_epochs: 1
-    save_freq: 500
-    test_freq: 500
+project_name: memory_refactor_grpo_online
+experiment_name: online_training
+trainer_logger: ["console", "wandb"]
+n_gpus_per_node: 1
+nnodes: 1

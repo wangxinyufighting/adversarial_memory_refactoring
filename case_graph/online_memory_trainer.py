@@ -149,7 +149,7 @@ class OnlineMemoryTrainer:
             model_dtype = self.config.get("model_dtype", "bfloat16")
             rollout_dtype = self.config.get("rollout_dtype", model_dtype)
             attn_implementation = self.config.get("attn_implementation", "flash_attention_2")
-            save_freq = self.config.get("save_freq", self.config.get("checkpoint_interval", 500))
+            save_freq = self.config.get("save_freq", 500)
             verl_args = [
                 sys.executable, "-m", "verl.trainer.main_ppo",
                 # Algorithm

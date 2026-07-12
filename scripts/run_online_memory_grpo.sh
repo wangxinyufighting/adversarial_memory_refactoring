@@ -69,6 +69,7 @@ args=(
 [[ -n "${INFER_BACKEND:-}" ]] && args+=(--infer-backend "${INFER_BACKEND}")
 [[ -n "${ROLLOUT_TP:-}" ]] && args+=(--rollout-tp "${ROLLOUT_TP}")
 [[ -n "${ROLLOUT_GPU_MEMORY_UTILIZATION:-}" ]] && args+=(--rollout-gpu-memory-utilization "${ROLLOUT_GPU_MEMORY_UTILIZATION}")
+[[ -n "${N_GPUS_PER_NODE:-}" ]] && args+=(--n-gpus-per-node "${N_GPUS_PER_NODE}")
 [[ -n "${MAX_PROMPT_LENGTH:-}" ]] && args+=(--max-prompt-length "${MAX_PROMPT_LENGTH}")
 [[ -n "${MAX_RESPONSE_LENGTH:-}" ]] && args+=(--max-response-length "${MAX_RESPONSE_LENGTH}")
 [[ -n "${MODEL_DTYPE:-}" ]] && args+=(--model-dtype "${MODEL_DTYPE}")
