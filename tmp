@@ -1,0 +1,22 @@
+[
+  { "id": "B2", "name": "提供问诊逻辑框架",   "party": "岳阳医院团队", "start": "2026-05-10", "end": "2026-06-10", "status": "done" },
+  { "id": "B3", "name": "提供指南、专家共识",   "party": "岳阳医院团队", "start": "2026-05-10", "end": "2026-06-10", "status": "done"},
+  { "id": "B1", "name": "提供病例文本数据",   "party": "岳阳医院团队", "start": "2026-06-10", "end": "2026-06-26", "status": "done" },
+  { "id": "B4", "name": "访问算力服务器",   "party": "岳阳医院团队", "start": "2026-06-10", "end": "2026-07-09", "status": "done"},
+  { "id": "B5", "name": "服务器环境搭建",   "party": "岳阳医院团队", "start": "2026-07-09", "end": "2026-07-13", "status": "progress"},
+  { "id": "B7", "name": "提供全量患者图片",   "party": "岳阳医院团队", "start": "2026-06-10", "end": "2026-07-13", "status": "progress"},
+  { "id": "B6", "name": "提供药方字段",   "party": "岳阳医院团队", "start": "2026-07-06", "end": "2026-07-13", "status": "progress"},
+  { "id": "B8", "name": "提供皮损分数标注",   "party": "岳阳医院团队", "start": "2026-07-06", "end": "2026-07-13", "status": "progress"},
+  { "id": "B9", "name": "提供皮损判断逻辑",   "party": "岳阳医院团队", "start": "2026-07-06", "end": "2026-07-13", "status": "progress"},
+  { "id": "B10", "name": "提供证候字段",   "party": "岳阳医院团队", "start": "2026-07-11", "end": "2026-07-13", "status": "progress"},
+  { "id": "B11", "name": "讲解病例case逻辑",   "party": "岳阳医院团队", "start": "2026-07-11", "end": "2026-07-13", "status": "progress"},
+
+  { "id": "A3", "name": "初步搭建诊断框架",   "party": "华师大团队", "start": "2026-06-08", "end": "2026-06-10", "status": "done"},
+  { "id": "A4", "name": "初步搭建问诊框架", "party": "华师大团队", "start": "2026-06-08", "end": "2026-06-10", "status": "done" },
+  { "id": "A1", "name": "测试多模态模型基础能力",   "party": "华师大团队", "start": "2026-06-26", "end": "2026-07-10", "status": "done" },
+  { "id": "A5", "name": "整合多模态数据",   "party": "华师大团队", "start": "2026-06-26", "end": "2026-07-13", "status": "blocked" , "dependsOn": ["B6","B7", "B8", "B10"] },
+  { "id": "A2", "name": "测试deepseek基础能力",   "party": "华师大团队", "start": "2026-06-26", "end": "2026-07-13", "status": "blocked" , "dependsOn": ["B5"] },
+  { "id": "A6", "name": "优化搭建诊断框架",   "party": "华师大团队", "start": "2026-06-10", "end": "2026-07-13", "status": "progress" , "dependsOn": ["A5"]},
+  { "id": "A7", "name": "优化搭建问诊框架", "party": "华师大团队", "start": "2026-06-10", "end": "2026-07-13", "status": "progress", "dependsOn": ["A5"] }
+
+]

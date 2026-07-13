@@ -2,7 +2,7 @@
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +23,7 @@ class TargetEvaluationResult:
     judge: Dict[str, Any]
     memory_path: str = ""
     status: str = "evaluated"
+    coverage_state: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -36,6 +37,7 @@ class TargetEvaluationResult:
             "judge": self.judge,
             "memory_path": self.memory_path,
             "status": self.status,
+            "coverage_state": self.coverage_state,
         }
 
 
@@ -48,12 +50,17 @@ def evaluate_case_target(
     min_score: float = 0.0,
     memory_path: str = "",
     retriever_config: Optional[Dict[str, Any]] = None,
+    coverage_state: Optional[Dict[str, Any]] = None,
 ) -> TargetEvaluationResult:
     """Retrieve compressed memory and answer a graph's held-out target question."""
     case_id = str(graph.get("case_id", "unknown"))
     target = graph.get("target") or {}
     question = str(target.get("question") or graph.get("question") or "")
-    gold_answer = str(target.get("answer") or graph.get("answer") or "")
+    if "answer" in target and target.get("answer") is not None:
+        answer_value = target.get("answer")
+    else:
+        answer_value = graph.get("answer", "")
+    gold_answer = str(answer_value)
     if not question or not gold_answer:
         raise ValueError(f"Case {case_id} is missing target question or answer.")
 
@@ -79,6 +86,7 @@ def evaluate_case_target(
         answer_result=answer_result,
         judge=judge_result,
         memory_path=memory_path,
+        coverage_state=dict(coverage_state or {}),
     )
 
 
@@ -118,15 +126,29 @@ def resolve_case_memory_path(case_id: str, memory_dir: str | Path) -> Optional[P
     )[0]
 
 
+def resolve_case_coverage_path(case_id: str, coverage_dir: str | Path) -> Optional[Path]:
+    directory = Path(coverage_dir)
+    if not directory.exists():
+        return None
+    exact = directory / f"{case_id}.json"
+    return exact if exact.exists() else None
+
+
 def summarize_results(results: List[TargetEvaluationResult]) -> Dict[str, Any]:
     evaluated = [item for item in results if item.status == "evaluated"]
     correct = sum(1 for item in evaluated if item.correct)
-    total = len(evaluated)
+    total = len(results)
+    evaluated_count = len(evaluated)
+    status_counts: Dict[str, int] = {}
+    for item in results:
+        status_counts[item.status] = status_counts.get(item.status, 0) + 1
     return {
-        "total": len(results),
-        "evaluated": total,
+        "total": total,
+        "evaluated": evaluated_count,
         "correct": correct,
         "accuracy": (correct / total) if total else 0.0,
+        "evaluated_accuracy": (correct / evaluated_count) if evaluated_count else 0.0,
+        "status_counts": status_counts,
     }
 
 

@@ -1,7 +1,7 @@
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .baseline import AnswerEquivalenceJudge, JsonClient, _answers_match
 from .llm import OpenAIChatClient
@@ -136,6 +136,12 @@ def run_initial_defense(
     top_k: int = 5,
     min_score: float = 0.0,
     use_answer_agent: bool = True,
+    success_validator: Optional[
+        Callable[
+            [str, str, List[RetrievalHit], Dict[str, Any], Dict[str, Any]],
+            Dict[str, Any],
+        ]
+    ] = None,
 ) -> InitialDefenseOutcome:
     retriever = retriever or FrozenBM25Retriever(memory_store)
     hits = retriever.retrieve(question, top_k=top_k, min_score=min_score)
@@ -164,6 +170,22 @@ def run_initial_defense(
             "reason": "Gold answer was checked against retrieved memory text without an LLM call.",
         }
     correct = bool(judge_result.get("correct", False))
+    if correct and success_validator is not None:
+        validation = success_validator(
+            question,
+            gold_answer,
+            hits,
+            answer_result,
+            judge_result,
+        )
+        validation = dict(validation or {})
+        memory_complete = bool(validation.get("complete", False))
+        judge_result = {
+            **judge_result,
+            "memory_complete": memory_complete,
+            "memory_completeness": validation,
+        }
+        correct = correct and memory_complete
     bound_memory_ids: List[str] = []
 
     if correct:

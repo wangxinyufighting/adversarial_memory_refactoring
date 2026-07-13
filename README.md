@@ -295,15 +295,21 @@ Each parquet row contains only the minimal GRPO state `S_t = (M_t, Q, F, action,
 
 ## Evaluate Compressed Memory on Target Questions
 
-After online training, evaluate held-out CaseGraph target questions by loading the compressed memory checkpoint, retrieving with the existing frozen BM25 retriever, and asking the configured LLM answer agent:
+After online training, first construct and certify one fixed memory per held-out case with `scripts/construct_defender_memory_for_eval.sh`. Then evaluate target questions with the same dense structured retriever used during construction:
 
 ```bash
 ./scripts/evaluate_target_questions.sh \
   --graphs outputs/case_graphs_test \
-  --memory-dir outputs/online_grpo/checkpoint_final/memory_states \
+  --memory-dir outputs/eval_memory_construction/global_step_750/memory_states \
+  --coverage-dir outputs/eval_memory_construction/global_step_750/coverage_states \
+  --training-config configs/online_grpo.yaml \
   --output outputs/eval_target_questions.json \
-  --top-k 5
+  --retriever-type dense_structured \
+  --retriever-model-name /mnt/local2/wxy/models/contriever \
+  --retriever-require-model \
+  --top-k 8 \
+  --top-k-points 32
 ```
 
-Use `--memory outputs/final_memory.json` instead of `--memory-dir` when every test case should share one memory store. The output contains per-case retrieval hits, answer-agent output, judge result, and aggregate accuracy.
+Construction and target evaluation inherit retrieval/top-k settings from the training YAML unless explicitly overridden. Use `--memory outputs/final_memory.json` instead of `--memory-dir` when every test case should share one memory store. Per-case evaluation fails closed when coverage is missing or incomplete; use `--allow-incomplete-memory` only for diagnosis. See `Evaluation/README.md` and `Evaluation/OPTIMIZATION_REPORT.md` for the complete workflow and metric definitions.
 # adversarial_memory_refactoring

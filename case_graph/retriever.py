@@ -3,7 +3,9 @@ import math
 import re
 import hashlib
 import logging
-from collections import Counter
+import threading
+from array import array
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -255,7 +257,7 @@ class DenseStructuredMemoryRetriever:
         self.hash_dim = int(hash_dim or 384)
         self.points = self._build_points()
         self._encoder = None
-        self._point_embeddings: Optional[List[List[float]]] = None
+        self._point_embeddings: Optional[List[Sequence[float]]] = None
 
     def retrieve(self, question: str, top_k: int = 5, min_score: float = 0.0) -> List[RetrievalHit]:
         if top_k <= 0 or not self.points or not str(question or "").strip():
@@ -274,10 +276,13 @@ class DenseStructuredMemoryRetriever:
         else:
             candidate_points = scored_points
 
-        by_memory: Dict[str, Dict[str, Any]] = {}
+        # Group by physical chunk index, not model-provided memory_id. Older
+        # checkpoints can emit duplicate IDs; collapsing them here silently
+        # drops evidence from retrieval.
+        by_memory: Dict[int, Dict[str, Any]] = {}
         for weighted_score, raw_score, point in candidate_points:
             record = by_memory.setdefault(
-                point.memory_id,
+                point.chunk_index,
                 {
                     "score": weighted_score,
                     "chunk_index": point.chunk_index,
@@ -300,8 +305,8 @@ class DenseStructuredMemoryRetriever:
         )[:top_k]
 
         hits: List[RetrievalHit] = []
-        for rank, (memory_id, record) in enumerate(ranked, start=1):
-            chunk = self.memory_store.chunks[int(record["chunk_index"])]
+        for rank, (chunk_index, record) in enumerate(ranked, start=1):
+            chunk = self.memory_store.chunks[int(chunk_index)]
             metadata = dict(chunk.metadata)
             metadata["retrieval_points"] = record["points"][: self.top_k_points]
             metadata["retriever"] = {
@@ -312,7 +317,7 @@ class DenseStructuredMemoryRetriever:
             }
             hits.append(
                 RetrievalHit(
-                    memory_id=memory_id,
+                    memory_id=chunk.memory_id,
                     content=chunk.content,
                     score=float(record["score"]),
                     rank=rank,
@@ -368,9 +373,20 @@ class DenseStructuredMemoryRetriever:
 
     def _score_points(self, question: str) -> List[float]:
         encoder = self._get_encoder()
+        namespace = (
+            self.embedding_model,
+            self.model_name,
+            self.device or "",
+            self.max_length or 0,
+            self.hash_dim,
+        )
         if self._point_embeddings is None:
-            self._point_embeddings = encoder.encode([point.point for point in self.points])
-        query_embedding = encoder.encode([question])[0]
+            self._point_embeddings = _encode_with_cache(
+                encoder,
+                [point.point for point in self.points],
+                namespace,
+            )
+        query_embedding = _encode_with_cache(encoder, [question], namespace)[0]
         return [_dot(query_embedding, embedding) for embedding in self._point_embeddings]
 
     def _get_encoder(self):
@@ -682,6 +698,38 @@ class _HFEmbeddingEncoder:
 
 
 _ENCODER_CACHE: Dict[tuple, Any] = {}
+_ENCODER_CACHE_LOCK = threading.Lock()
+_EMBEDDING_VECTOR_CACHE: "OrderedDict[tuple, Sequence[float]]" = OrderedDict()
+_EMBEDDING_CACHE_LOCK = threading.RLock()
+_EMBEDDING_CACHE_MAX_ITEMS = 50000
+
+
+def _encode_with_cache(
+    encoder: Any,
+    texts: List[str],
+    namespace: tuple,
+) -> List[Sequence[float]]:
+    if not texts:
+        return []
+    keys = [(namespace, str(text)) for text in texts]
+    with _EMBEDDING_CACHE_LOCK:
+        missing_texts = []
+        missing_keys = []
+        seen_missing = set()
+        for key, text in zip(keys, texts):
+            if key in _EMBEDDING_VECTOR_CACHE:
+                _EMBEDDING_VECTOR_CACHE.move_to_end(key)
+            elif key not in seen_missing:
+                missing_keys.append(key)
+                missing_texts.append(str(text))
+                seen_missing.add(key)
+        if missing_texts:
+            vectors = encoder.encode(missing_texts)
+            for key, vector in zip(missing_keys, vectors):
+                _EMBEDDING_VECTOR_CACHE[key] = array("f", vector)
+            while len(_EMBEDDING_VECTOR_CACHE) > _EMBEDDING_CACHE_MAX_ITEMS:
+                _EMBEDDING_VECTOR_CACHE.popitem(last=False)
+        return [_EMBEDDING_VECTOR_CACHE[key] for key in keys]
 
 
 def _get_embedding_encoder(
@@ -698,28 +746,29 @@ def _get_embedding_encoder(
         return _HashEmbeddingEncoder(dim=hash_dim)
 
     cache_key = (model_name, device or "", cache_dir or "", max_length or "")
-    if cache_key in _ENCODER_CACHE:
-        return _ENCODER_CACHE[cache_key]
-    try:
-        encoder = _HFEmbeddingEncoder(
-            model_name=model_name,
-            device=device,
-            cache_dir=cache_dir,
-            max_length=max_length,
-        )
-        _ENCODER_CACHE[cache_key] = encoder
-        return encoder
-    except Exception as exc:
-        if require_model:
-            raise
-        logger.warning(
-            "Falling back to hashed dense retrieval because embedding model %s could not be loaded: %s",
-            model_name,
-            exc,
-        )
-        encoder = _HashEmbeddingEncoder(dim=hash_dim)
-        _ENCODER_CACHE[cache_key] = encoder
-        return encoder
+    with _ENCODER_CACHE_LOCK:
+        if cache_key in _ENCODER_CACHE:
+            return _ENCODER_CACHE[cache_key]
+        try:
+            encoder = _HFEmbeddingEncoder(
+                model_name=model_name,
+                device=device,
+                cache_dir=cache_dir,
+                max_length=max_length,
+            )
+            _ENCODER_CACHE[cache_key] = encoder
+            return encoder
+        except Exception as exc:
+            if require_model:
+                raise
+            logger.warning(
+                "Falling back to hashed dense retrieval because embedding model %s could not be loaded: %s",
+                model_name,
+                exc,
+            )
+            encoder = _HashEmbeddingEncoder(dim=hash_dim)
+            _ENCODER_CACHE[cache_key] = encoder
+            return encoder
 
 
 def _hash_vector(text: str, dim: int) -> List[float]:

@@ -6,11 +6,13 @@ This directory contains the held-out evaluation memory builder. It uses a traine
 
 1. Load each held-out CaseGraph.
 2. Strip evaluator-only target metadata from the graph view used by routing and attacker probes.
-3. Sample public graph routes and generate construction probes with the attacker.
-4. Run the current memory through the same retrieval and initial-defense check used in training.
-5. If refactoring is needed, call the defender checkpoint through an OpenAI-compatible endpoint.
-6. Sandbox the proposed memory edit, score it with the existing refactoring reward, and commit only the best positive rollout.
-7. Save per-case memory files under `memory_states/` for later evaluation.
+3. Classify target-free graph facts into memory-worthy units and background knowledge.
+4. Generate adaptive probes. Failed units are retried immediately; successful chunks can cover sibling facts from the same source session when those facts are explicitly present in the saved memory.
+5. Add target-free compositional probes for repeated events and cross-session user relations, including temporal medical-visit counts and distinct-item counts such as owned instruments.
+6. Run the current memory through the same retrieval and initial-defense check used in training, then reject answer-correct but structurally incomplete evidence.
+7. If refactoring is needed, call the defender checkpoint through an OpenAI-compatible endpoint, retry malformed JSON, and sandbox the edit.
+8. Commit only complete positive rollouts. After required coverage is reached, run consecutive certification probes before marking the case `done`.
+9. Save per-case memory files under `memory_states/` for later evaluation.
 
 The output memory is intentionally fixed. Later evaluation should read `memory_states/<case_id>.json` instead of letting the defender keep editing memory while answering target questions.
 
@@ -22,7 +24,10 @@ DEFENDER_SERVED_MODEL=defender-current \
 PYTHON_BIN=python \
 GRAPHS=outputs/case_graphs_test \
 OUTPUT_DIR=outputs/eval_memory_construction/defender-current \
-EPISODES_PER_CASE=100 \
+EPISODES_PER_CASE=250 \
+QUESTIONS_PER_UNIT=3 \
+HARD_MAX_QUESTIONS_PER_CASE=2000 \
+CASE_WORKERS=2 \
 ./scripts/construct_defender_memory_for_eval.sh
 ```
 
@@ -60,6 +65,14 @@ OUTPUT_DIR=outputs/eval_memory_construction/global_step_100 \
 
 In `coverage` mode no attacker server is required. If `ANSWER_API_BASE` or `JUDGE_API_BASE` is not set and no global LLM env is configured, the builder reuses the defender endpoint for retrieved-memory answering and semantic answer judging. Set `SKIP_LLM_JUDGE=true` only when you want strict string-match judging.
 
+`EPISODES_PER_CASE` is a floor, not a fixed total. By default, the resolved case budget is approximately `required_coverage_units * QUESTIONS_PER_UNIT + CERTIFICATION_QUESTIONS`, capped by `HARD_MAX_QUESTIONS_PER_CASE`. Construction still stops early after coverage and certification. Set `DISABLE_DYNAMIC_QUESTION_BUDGET=true` only for debugging.
+
+The builder defaults to 4096 defender output tokens, matching the training response scale and avoiding truncated JSON. `DEFENDER_PROPOSAL_RETRIES=2` retries malformed output. `MAX_RETRIES_PER_UNIT=3` controls immediate retries for failed coverage units. `TRACE_DETAIL=compact` avoids copying every temporary memory state into the trace; use `full` only for a focused debugging run.
+
+By default, construction reads `configs/online_grpo.yaml` and inherits its `tau`, retrieval, top-k, coverage, seed, routing, and reward settings. Environment/CLI values still take precedence. Set `TRAINING_CONFIG=/path/to/the/config.yaml` when the checkpoint used a different configuration; the fully resolved settings are written to `construction_config.yaml`.
+
+`CASE_WORKERS=2` or `4` lets a vLLM endpoint batch requests from different cases. Start conservatively when the answer agent, judge, and defender share one small GPU. Dense point embeddings are cached across repeated sandbox retrievals.
+
 To use the training-consistent local attacker server instead:
 
 ```bash
@@ -75,8 +88,34 @@ OUTPUT_DIR=outputs/eval_memory_construction/global_step_100 \
 
 Important outputs:
 
-- `memory_states/<case_id>.json`: final memory for evaluation.
+- `memory_states/<case_id>.json`: final inference memory; construction-only linked questions and prompt metadata are removed.
 - `memory_states/<case_id>_pool.json`: successful construction questions bound to memory chunks.
 - `memory_states/<case_id>_buffer.json`: failed probes to inspect or retry.
 - `traces/<case_id>.trace.json`: episode-level construction decisions.
+- `coverage_states/<case_id>.json`: required/structural coverage, certification state, resolved budget, and stop reason.
 - `construction_summary.json`: aggregate counts.
+
+Only cases with `completion_status: done` are certified for target evaluation. `structural_coverage` reports all public graph edges, while `required_coverage` is the stopping metric over personal, episodic, temporal, and compositional units. Background world knowledge is not forced into memory.
+
+## Evaluate Target Questions
+
+The target evaluator automatically reads the sibling `coverage_states/` directory, refuses incomplete memories by default, and loads the same training retriever settings unless explicitly overridden:
+
+```bash
+CASE_GRAPH_PROVIDER=local \
+LOCAL_API_BASE_URL=http://localhost:8004/v1 \
+LOCAL_MODEL=defender-current \
+LOCAL_API_KEY=eval-local-key \
+./scripts/evaluate_target_questions.sh \
+  --graphs outputs/longmemeval_split/case_graphs_test \
+  --memory-dir outputs/evaluation/global_step_750/memory_states \
+  --coverage-dir outputs/evaluation/global_step_750/coverage_states \
+  --training-config configs/online_grpo.yaml \
+  --output outputs/evaluation/global_step_750/target_results.json \
+  --retriever-model-name /mnt/local2/wxy/models/contriever \
+  --retriever-require-model \
+  --top-k 8 \
+  --top-k-points 32
+```
+
+The reported `accuracy` uses every requested case as the denominator. `evaluated_accuracy` covers only certified cases that reached the answer stage. Use `--allow-incomplete-memory` only for diagnostics; it should not be used for the main benchmark number.

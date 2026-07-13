@@ -1,7 +1,7 @@
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 from .attack_routes_cli import generate_attacks
 from .attacker import FrozenLLMAttacker
@@ -20,7 +20,7 @@ from .refactoring import (
     run_sandbox_refactor,
     settle_grpo_rollouts,
 )
-from .retriever import MemoryStore, build_memory_retriever
+from .retriever import MemoryStore, RetrievalHit, build_memory_retriever
 from .verifier import GoldenFactVerifier
 
 
@@ -64,6 +64,13 @@ def prepare_refactor_state(
     judge: AnswerEquivalenceJudge,
     config: AlgorithmConfig,
     step: int,
+    initial_success_validator: Optional[
+        Callable[
+            [str, str, List[RetrievalHit], Dict[str, Any], Dict[str, Any]],
+            Dict[str, Any],
+        ]
+    ] = None,
+    return_initial_success_state: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Prepare one refactoring state from attack (used by both offline & online).
 
@@ -93,10 +100,22 @@ def prepare_refactor_state(
         top_k=config.top_k,
         min_score=config.min_score,
         use_answer_agent=config.initial_defense_use_llm,
+        success_validator=initial_success_validator,
     )
 
     if initial.correct:
-        return None  # No refactor needed
+        if not return_initial_success_state:
+            return None  # No refactor needed
+        return {
+            "case_id": case_id,
+            "step": step,
+            "question": question,
+            "answer": answer,
+            "golden_facts": golden_facts,
+            "route_evidence": route_evidence,
+            "initial_defense": initial.to_dict(),
+            "initial_defense_success": True,
+        }
 
     # Decide action (add/merge)
     decision = SimilarityActionRouter(

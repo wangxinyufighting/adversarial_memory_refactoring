@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
 from .baseline import AnswerEquivalenceJudge
@@ -63,7 +64,12 @@ def evaluate_refactor_proposal(
     retriever_config = dict(state.get("retriever_config") or {})
     reward_config = dict(state.get("reward_config") or {})
     reward_mode = str(reward_config.get("mode", "semantic_complete")).casefold()
-    use_llm_answer = reward_mode in {"evaluation_aligned", "llm", "answer_agent"}
+    route_evidence = state.get("route_evidence") or {}
+    aggregate_probe = bool(
+        isinstance(route_evidence, dict) and route_evidence.get("aggregate")
+    )
+    evaluation_aligned = reward_mode in {"evaluation_aligned", "llm", "answer_agent"}
+    use_llm_current_answer = evaluation_aligned or aggregate_probe
 
     current = _test_question(
         memory_store=temp_memory,
@@ -74,7 +80,7 @@ def evaluate_refactor_proposal(
         min_score=min_score,
         answer_agent=answer_agent,
         judge=judge,
-        use_llm_answer=use_llm_answer,
+        use_llm_answer=use_llm_current_answer,
     )
     completeness = evaluate_completeness(
         proposal=proposal,
@@ -103,7 +109,7 @@ def evaluate_refactor_proposal(
             min_score=min_score,
             answer_agent=answer_agent,
             judge=judge,
-            use_llm_answer=use_llm_answer,
+            use_llm_answer=evaluation_aligned,
         )
         for item in state.get("regression_questions", [])
     ]
@@ -150,14 +156,21 @@ def evaluate_completeness(
         generated_text=generated_text,
         reward_config=reward_config,
     )
+    if structured.get("aggregate_answer_derivable", False):
+        # Aggregate answers should be derivable from complete atomic events;
+        # the memory does not need to persist a target-shaped count sentence.
+        answer_present = True
 
     min_relation_overlap = float(reward_config.get("min_relation_overlap", 0.25))
     min_fact_overlap = float(reward_config.get("min_fact_overlap", 0.25))
     min_non_answer_tokens = int(reward_config.get("min_non_answer_tokens", 3))
     non_answer_tokens = generated_tokens - answer_tokens
-    answer_only = answer_present and (
-        len(non_answer_tokens) < min_non_answer_tokens or relation_overlap < 0.15
-    )
+    if structured["structured_available"]:
+        answer_only = answer_present and len(non_answer_tokens) < min_non_answer_tokens
+    else:
+        answer_only = answer_present and (
+            len(non_answer_tokens) < min_non_answer_tokens or relation_overlap < 0.15
+        )
     if structured["structured_available"]:
         complete = bool(answer_present and not answer_only and structured["structured_complete"])
         completeness_score = (
@@ -206,6 +219,9 @@ def _evaluate_structured_route(
 ) -> Dict[str, Any]:
     if not isinstance(route_evidence, dict):
         return _empty_structured_diagnostics()
+    aggregate = route_evidence.get("aggregate")
+    if isinstance(aggregate, dict):
+        return _evaluate_aggregate_route(aggregate, answer, generated_text, reward_config)
     relationships = [
         item for item in route_evidence.get("relationships", []) if isinstance(item, dict)
     ]
@@ -296,6 +312,10 @@ def _evaluate_structured_route(
         "qualifier_coverage": qualifier_coverage,
         "structured_edges_checked": checked_edges,
         "missing_structured_components": missing,
+        "aggregate_available": False,
+        "aggregate_event_coverage": 0.0,
+        "aggregate_count_present": False,
+        "aggregate_answer_derivable": False,
     }
 
 
@@ -309,6 +329,99 @@ def _empty_structured_diagnostics() -> Dict[str, Any]:
         "qualifier_coverage": 0.0,
         "structured_edges_checked": [],
         "missing_structured_components": [],
+        "aggregate_available": False,
+        "aggregate_event_coverage": 0.0,
+        "aggregate_count_present": False,
+        "aggregate_answer_derivable": False,
+    }
+
+
+def _evaluate_aggregate_route(
+    aggregate: Dict[str, Any],
+    answer: str,
+    generated_text: str,
+    reward_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    events = [item for item in aggregate.get("events", []) if isinstance(item, dict)]
+    event_scores = []
+    checked_edges = []
+    for event in events:
+        label = str(event.get("label", ""))
+        date = str(event.get("date", ""))
+        relation = str(event.get("relation", ""))
+        label_score = _phrase_coverage(label, generated_text)
+        relation_score = _phrase_coverage(relation, generated_text)
+        if date:
+            date_score = 1.0 if _answer_in_text(date, generated_text) else 0.0
+            # Temporal events need their date plus an event identity/relation.
+            event_score = date_score * max(label_score, relation_score)
+        else:
+            date_score = 1.0
+            # Relation-count probes require every distinct entity identity;
+            # repeating the shared relation alone cannot establish the count.
+            event_score = label_score
+        event_scores.append(event_score)
+        checked_edges.append(
+            {
+                "source": label,
+                "relation": relation,
+                "target": date,
+                "event_coverage": event_score,
+            }
+        )
+
+    event_coverage = sum(event_scores) / len(event_scores) if event_scores else 0.0
+    count_present = _answer_in_text(str(aggregate.get("expected_count", answer)), generated_text)
+    bucket = str(aggregate.get("time_bucket", ""))
+    bucket_coverage = _time_bucket_coverage(bucket, generated_text) if bucket else 1.0
+    aggregate_relation = str(aggregate.get("relation", ""))
+    aggregate_relation_coverage = (
+        _phrase_coverage(aggregate_relation, generated_text)
+        if aggregate_relation
+        else 1.0
+    )
+    min_event_coverage = float(reward_config.get("min_aggregate_event_coverage", 0.8))
+    try:
+        expected_count = int(aggregate.get("expected_count", answer))
+    except (TypeError, ValueError):
+        expected_count = -1
+    count_derivable = bool(
+        events
+        and expected_count == len(events)
+        and event_coverage >= min_event_coverage
+    )
+    complete = bool(
+        events
+        and (count_present or count_derivable)
+        and event_coverage >= min_event_coverage
+        and bucket_coverage >= 1.0
+        and aggregate_relation_coverage >= 0.5
+    )
+    missing = []
+    if not count_present and not count_derivable:
+        missing.append("aggregate_count")
+    if event_coverage < min_event_coverage:
+        missing.append("aggregate_events")
+    if bucket_coverage < 1.0:
+        missing.append("time_bucket")
+    if aggregate_relation_coverage < 0.5:
+        missing.append("relation")
+    return {
+        "structured_available": True,
+        "structured_complete": complete,
+        "subject_coverage": event_coverage,
+        "object_coverage": event_coverage,
+        "structured_relation_coverage": min(
+            event_coverage,
+            aggregate_relation_coverage,
+        ),
+        "qualifier_coverage": bucket_coverage,
+        "structured_edges_checked": checked_edges,
+        "missing_structured_components": missing,
+        "aggregate_available": True,
+        "aggregate_event_coverage": event_coverage,
+        "aggregate_count_present": count_present,
+        "aggregate_answer_derivable": count_derivable,
     }
 
 
@@ -358,13 +471,29 @@ def _relevant_route_relationships(
 
 
 def _phrase_coverage(required_phrase: str, actual_text: str) -> float:
+    required_dates = set(_canonical_dates(required_phrase))
+    if required_dates and required_dates & set(_canonical_dates(actual_text)):
+        return 1.0
     required = _normalize(required_phrase)
     actual = _normalize(actual_text)
     if not required:
         return 1.0
     if required in actual:
         return 1.0
-    return _coverage(_significant_tokens(required_phrase), _significant_tokens(actual_text))
+    required_tokens = [
+        token
+        for token in _significant_tokens(required_phrase)
+        if token not in _ENTITY_ALIAS_STOPWORDS
+    ]
+    if not required_tokens:
+        required_tokens = _significant_tokens(required_phrase)
+    actual_tokens = _significant_tokens(actual_text)
+    direct = _coverage(required_tokens, actual_tokens)
+    stemmed = _coverage(
+        (_light_stem(token) for token in required_tokens),
+        (_light_stem(token) for token in actual_tokens),
+    )
+    return max(direct, stemmed)
 
 
 def _test_question(
@@ -503,9 +632,19 @@ def _raw_copy_ratio(proposal: RefactorProposal, golden_texts: List[str]) -> floa
 
 
 def _answer_in_text(answer: str, text: str) -> bool:
+    answer_dates = set(_canonical_dates(answer))
+    if answer_dates and answer_dates & set(_canonical_dates(text)):
+        return True
     answer_norm = _normalize(answer)
     text_norm = _normalize(text)
-    return bool(answer_norm and answer_norm in text_norm)
+    if not answer_norm:
+        return False
+    answer_tokens = answer_norm.split()
+    text_tokens = text_norm.split()
+    if len(answer_tokens) == 1 and answer_tokens[0].isdigit():
+        number = int(answer_tokens[0])
+        return answer_tokens[0] in text_tokens or _NUMBER_WORDS.get(number, "") in text_tokens
+    return answer_norm in text_norm
 
 
 def _normalize(text: str) -> str:
@@ -523,6 +662,94 @@ def _significant_tokens(text: str, keep_stopwords: bool = False) -> List[str]:
 
 def _tokens(text: str) -> List[str]:
     return re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", str(text or "").casefold())
+
+
+def _light_stem(token: str) -> str:
+    token = str(token or "").casefold()
+    if token in {"has", "had", "have"}:
+        return "have"
+    if len(token) > 4 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    if len(token) > 5 and token.endswith("ed"):
+        return token[:-2]
+    return token
+
+
+_ENTITY_ALIAS_STOPWORDS = {
+    "dr",
+    "doctor",
+    "orthopedic",
+    "physician",
+    "primary",
+    "surgeon",
+}
+_NUMBER_WORDS = {
+    0: "zero",
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+    11: "eleven",
+    12: "twelve",
+    13: "thirteen",
+    14: "fourteen",
+    15: "fifteen",
+    16: "sixteen",
+    17: "seventeen",
+    18: "eighteen",
+    19: "nineteen",
+    20: "twenty",
+}
+_DATE_ISO_RE = re.compile(r"\b(20\d{2})[/-](0?[1-9]|1[0-2])[/-](0?[1-9]|[12]\d|3[01])\b")
+_MONTH_NAMES = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
+_DATE_MONTH_RE = re.compile(
+    r"\b(" + "|".join(_MONTH_NAMES) + r")\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*|\s+)(20\d{2})\b",
+    re.IGNORECASE,
+)
+
+
+def _canonical_dates(text: str) -> List[str]:
+    result = []
+    for match in _DATE_ISO_RE.finditer(str(text or "")):
+        result.append(f"{int(match.group(1)):04d}-{int(match.group(2)):02d}-{int(match.group(3)):02d}")
+    for match in _DATE_MONTH_RE.finditer(str(text or "")):
+        result.append(
+            f"{int(match.group(3)):04d}-{_MONTH_NAMES[match.group(1).casefold()]:02d}-{int(match.group(2)):02d}"
+        )
+    return result
+
+
+def _time_bucket_coverage(bucket: str, text: str) -> float:
+    try:
+        parsed = datetime.strptime(bucket, "%Y-%m")
+    except ValueError:
+        return 1.0 if _normalize(bucket) in _normalize(text) else 0.0
+    normalized = _normalize(text)
+    month_name = parsed.strftime("%B").casefold()
+    if month_name in normalized.split() and str(parsed.year) in normalized.split():
+        return 1.0
+    return 1.0 if any(date.startswith(bucket) for date in _canonical_dates(text)) else 0.0
 
 
 def _coverage(required: Iterable[str], actual: Iterable[str]) -> float:
