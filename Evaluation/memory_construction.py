@@ -926,33 +926,61 @@ def _coverage_question_for_user_edge(
 
 
 def _coverage_order(edges: List[Dict[str, Any]], graph: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Interleave source sessions so a bounded run does not starve later facts."""
     source_order = {
         str(chunk.get("chunk_id", "")): int(chunk.get("order", index))
         for index, chunk in enumerate(graph.get("chunks", []))
     }
 
-    def order_key(edge: Dict[str, Any]) -> tuple:
+    def source_key(edge: Dict[str, Any]) -> str:
         source_ids = [str(item) for item in edge.get("source_ids", [])]
-        first_source_order = min((source_order.get(item, 10**9) for item in source_ids), default=10**9)
-        user_rank = 0 if edge.get("source") == "USER" or edge.get("target") == "USER" else 1
+        return min(
+            source_ids,
+            key=lambda item: (source_order.get(item, 10**9), item),
+            default="",
+        )
+
+    def edge_priority(edge: Dict[str, Any]) -> tuple:
+        try:
+            weight = float(edge.get("weight", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            weight = 1.0
+        concrete_rank = (
+            0
+            if edge.get("source") != "USER" and edge.get("target") != "USER"
+            else 1
+        )
         return (
-            first_source_order,
-            user_rank,
+            -weight,
+            concrete_rank,
             str(edge.get("source", "")),
             str(edge.get("target", "")),
             str(edge.get("description", "")),
         )
 
-    primary_by_source: Dict[str, Dict[str, Any]] = {}
-    remaining: List[Dict[str, Any]] = []
-    for edge in sorted(edges, key=order_key):
-        source_ids = [str(item) for item in edge.get("source_ids", [])] or [""]
-        first_source = source_ids[0]
-        if first_source and first_source not in primary_by_source:
-            primary_by_source[first_source] = edge
-        else:
-            remaining.append(edge)
-    return list(primary_by_source.values()) + remaining
+    edges_by_source: Dict[str, List[Dict[str, Any]]] = {}
+    for edge in edges:
+        edges_by_source.setdefault(source_key(edge), []).append(edge)
+    for source_edges in edges_by_source.values():
+        source_edges.sort(key=edge_priority)
+
+    ordered_sources = sorted(
+        edges_by_source,
+        key=lambda item: (source_order.get(item, 10**9), item),
+    )
+    ordered_edges: List[Dict[str, Any]] = []
+    depth = 0
+    while True:
+        added = False
+        for source_id in ordered_sources:
+            source_edges = edges_by_source[source_id]
+            if depth < len(source_edges):
+                ordered_edges.append(source_edges[depth])
+                added = True
+        if not added:
+            break
+        depth += 1
+    return ordered_edges
 
 
 def _is_public_coverage_edge(edge: Dict[str, Any], entities: Dict[str, Dict[str, Any]]) -> bool:
