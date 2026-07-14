@@ -201,23 +201,191 @@ $\lambda\mathbf{1}[\text{Answerer 初始回答错误}]$。
 
 \section*{4. Defender Reward}
 
-Defender 仍以完整、可检索、不遗忘和紧凑为目标。对于方案 $p_{t,i,j}$，其 Reward 为
+Defender Reward 评价的不是生成文本本身是否“看起来像摘要”，而是把方案
+$p_{t,i,j}$ 真正写入沙盒记忆后，当前题能否被检索并正确回答、图谱关系是否完整、旧能力是否保留，以及新增记忆是否紧凑。以下各项均针对同一个沙盒结果计算。
+
+\subsection*{4.1 沙盒测试产生的基础变量}
+
+在 $M_{c,t}$ 的深拷贝上执行方案 $p_{t,i,j}$，得到
+$M^{\mathrm{temp}}_{t,i,j}$，然后使用冻结 Contriever 重新检索。定义：
+
+\begin{itemize}
+    \item $c_{t,i,j}\in\{0,1\}$：当前问题是否能够从
+    $M^{\mathrm{temp}}_{t,i,j}$ 的 Top-$K$ 检索结果中得到正确答案；
+    \item $h_{t,i,j}\in\{0,1\}$：本次新写入的记忆是否完整；
+    \item $a^{\mathrm{reg}}_{t,i,j}\in[0,1]$：回归问题正确率；
+    \item $n^{\mathrm{fail}}_{t,i,j}$：回答错误的回归问题数量；
+    \item $n^{\mathrm{chunk}}_{t,i,j}$：方案新增的 chunk 数；
+    \item $n^{\mathrm{tok}}_{t,i,j}$：所有新增 chunk 的有效 token 总数。
+\end{itemize}
+
+其中“完整”不是只检查答案字符串。对于路由中的相关关系
+$(s,r,o)$，分别计算新记忆对 subject、object、relation 和 qualifier 的覆盖率：
+\[
+    C_s,\quad C_o,\quad C_r,\quad C_q.
+\]
+当前正式阈值为
+\[
+    C_s\ge0.8,\qquad
+    C_o\ge0.8,\qquad
+    C_r\ge0.5,\qquad
+    C_q\ge0.5,
+\]
+并要求答案可从检索证据中得到，且新记忆除答案外至少包含 5 个有效语义 token。因此
+\[
+    h_{t,i,j}
+    =
+    \mathbf{1}\!\left[
+      \text{answer present}
+      \land \neg\text{answer-only}
+      \land C_s,C_o,C_r,C_q\ \text{全部达标}
+    \right].
+\]
+对于计数或时间聚合问题，完整性检查要求组成答案的原子事件及其时间桶均被保留；记忆无需直接保存一个面向当前问题的计数句。
+
+\subsection*{4.2 Grounding 与压缩质量}
+
+除正确性和完整性外，还计算四个质量量：
+
+\begin{itemize}
+    \item $G_{t,i,j}\in[0,1]$：新记忆与合法参考证据的接地程度。Add 只能使用当前黄金证据；Merge 还可使用明确选中的旧 chunks；
+    \item $D_{t,i,j}\in[0,1]$：新 chunk 与没有被删除的旧 chunks 之间的最大语义重复度；
+    \item $X_{t,i,j}\in[0,1]$：较长新 chunk 对原始黄金 session 的直接复制比例；
+    \item $I^{\mathrm{ao}}_{t,i,j}\in\{0,1\}$：是否退化为只保存答案、没有关系上下文的 answer-only memory。
+\end{itemize}
+
+令 $T_{\mathrm{new}}$ 为新增 chunks 的有效 token 集，$T_{\mathrm{ref}}$ 为上述合法参考证据的 token 集，则
+\[
+    G_{t,i,j}
+    =
+    \frac{|T_{\mathrm{new}}\cap T_{\mathrm{ref}}|}
+         {|T_{\mathrm{new}}\cup T_{\mathrm{ref}}|}.
+\]
+重复度 $D$ 是任一新 chunk 与任一未被删除旧 chunk 的最大 token Jaccard
+相似度；$X$ 是长度至少为 20 token 的新 chunk 中，来自某条黄金原文的 token
+占比最大值。
+
+接地程度高会加分；重复、长段复制和 answer-only 形式会扣分。这样可以区分“忠于事实的紧凑重写”和“把整段原始对话直接塞进记忆”。
+
+\subsection*{4.3 基础 Reward 的逐项计算}
+
+当前题正确性项和完整性项分别为
+\[
+    r_{\mathrm{cur}}(c)=
+    \begin{cases}
+        +3, & c=1,\\
+        -3, & c=0,
+    \end{cases}
+    \qquad
+    r_{\mathrm{comp}}(h)=
+    \begin{cases}
+        +2, & h=1,\\
+        -2, & h=0.
+    \end{cases}
+\]
+
+基础 Reward 使用当前正式权重：
 \begin{align*}
-    R^D_{t,i,j}
+    R^{D,\mathrm{base}}_{t,i,j}
     ={}&
-    r_{\mathrm{current}}
-    +r_{\mathrm{complete}}
-    +w_gG_{t,i,j}
-    +w_r\operatorname{Acc}(\mathcal{R}_{t,i})\nonumber\\
-    &-w_fN_{\mathrm{regfail}}
-    -w_nN_{\mathrm{chunk}}
-    -w_lT_{\mathrm{new}}
-    -w_dD_{\mathrm{memory}}
-    -w_aI_{\mathrm{answer\mbox{-}only}}
-    -w_xX_{\mathrm{rawcopy}}.
+    r_{\mathrm{cur}}(c_{t,i,j})
+    +r_{\mathrm{comp}}(h_{t,i,j})
+    +1.0G_{t,i,j}\nonumber\\
+    &+1.25a^{\mathrm{reg}}_{t,i,j}
+    -2.0n^{\mathrm{fail}}_{t,i,j}
+    -0.3n^{\mathrm{chunk}}_{t,i,j}\nonumber\\
+    &-0.35\frac{n^{\mathrm{tok}}_{t,i,j}}{100}
+    -0.75D_{t,i,j}
+    -1.5I^{\mathrm{ao}}_{t,i,j}
+    -1.0X_{t,i,j}.
 \end{align*}
 
-若当前题错误，则 $R^D$ 至多为 $0$；若答案正确但 subject、relation、object 或 qualifier 不完整，则 $R^D$ 至多为 $0.5$。只有当前题正确、结构完整且回归测试稳定的方案，才能超过正式提交阈值。
+若回归集为空，则 $1.25a^{\mathrm{reg}}$ 这一项记为 $0$，而不是把空集合视为准确率 $1$。回归测试是分级惩罚：每失败一道题额外扣 $2$，同时准确率奖励下降。它不是一个单独的全通过硬门。
+
+\subsection*{4.4 正确性与完整性硬门控}
+
+基础分计算完成后，再执行
+\[
+    R^{D,\mathrm{gate}}_{t,i,j}
+    =
+    \begin{cases}
+        \min(R^{D,\mathrm{base}}_{t,i,j},0),
+        & c_{t,i,j}=0,\\
+        \min(R^{D,\mathrm{base}}_{t,i,j},0.5),
+        & c_{t,i,j}=1,\ h_{t,i,j}=0,\\
+        R^{D,\mathrm{base}}_{t,i,j},
+        & c_{t,i,j}=1,\ h_{t,i,j}=1.
+    \end{cases}
+\]
+
+这意味着：
+\begin{itemize}
+    \item 当前题仍然错误时，无论文本多简洁或回归表现多好，总分都不能为正；
+    \item 当前题答对但新记忆不完整时，总分最多为 $0.5$；
+    \item 只有当前题正确且关系完整时，方案才有资格获得高 Reward。
+\end{itemize}
+
+\subsection*{4.5 覆盖增益与最终 Reward}
+
+令 $W^{\mathrm{route}}_{t,i}$ 为当前路由全部 coverage units 的权重，
+$W^{\mathrm{pending}}_{t,i}$ 为其中尚未覆盖单元的权重，
+$W^{\mathrm{critical}}_{t,i}$ 为其中尚未覆盖 critical units 的权重。只有
+$c_{t,i,j}=1$ 且结构完整时，才计算
+\[
+    g^{\mathrm{cov}}_{t,i,j}
+    =
+    \min\!\left(
+      1,
+      \frac{W^{\mathrm{pending}}_{t,i}}
+           {W^{\mathrm{route}}_{t,i}}
+    \right),
+\]
+\[
+    g^{\mathrm{critical}}_{t,i,j}
+    =
+    \min\!\left(
+      1,
+      \frac{W^{\mathrm{critical}}_{t,i}}
+           {W^{\mathrm{route}}_{t,i}}
+    \right).
+\]
+当前题错误或不完整时，这两个增益均为 $0$。最终 Defender Reward 为
+\[
+    \boxed{
+    R^D_{t,i,j}
+    =
+    R^{D,\mathrm{gate}}_{t,i,j}
+    +1.5g^{\mathrm{cov}}_{t,i,j}
+    +1.0g^{\mathrm{critical}}_{t,i,j}
+    }.
+\]
+
+若 Policy 输出无法解析为合法 JSON 或没有有效 chunk，则该 rollout 直接记为
+$R^D=-3$，不执行沙盒编辑。
+
+\subsection*{4.6 Reward 与 Commit 的关系}
+
+同一状态的全部 $K_D$ 个 rollout Reward 都用于 Defender 的 GRPO 优势计算，但只有
+\[
+    j^*=\arg\max_j R^D_{t,i,j}
+\]
+可能改变环境。提交前使用最新 live memory 重新构造沙盒并重新计算完整 Reward。当前提交条件是
+\[
+    R^{D,\mathrm{live}}_{t,i,j^*}>\delta,
+    \qquad \delta=1.0.
+\]
+不满足时 Rollback。这里没有独立的“回归题必须全部通过”规则；回归失败通过准确率下降和每题 $-2$ 的惩罚影响最终阈值。
+
+例如，一个方案满足：当前题正确且完整，$G=0.8$，新增 1 个 20-token
+chunk，无回归题、无重复、无直接复制且不是 answer-only，则
+\[
+    R^{D,\mathrm{base}}
+    =3+2+0.8-0.3-0.35\times0.2
+    =5.43.
+\]
+若当前路由全部尚未覆盖且全部为 critical，则再获得 $1.5+1.0$，最终
+$R^D=7.93$。若同一方案虽然答对但结构不完整，则无论未门控分数多高，最终都至多为
+$0.5$，且没有覆盖奖励，因此不能越过 $\delta=1.0$。
 
 \section*{5. 完整单次联合训练迭代}
 
@@ -307,7 +475,8 @@ Defender 仍以完整、可检索、不遗忘和紧凑为目标。对于方案 $
     \[
         j^*=\arg\max_j R^D_{t,i^*,j}.
     \]
-    使用最新 live memory 重新验证该方案。只有 Reward 超过阈值、当前题正确完整且回归测试通过时才 Commit；否则 Rollback。
+    使用最新 live memory 重新验证该方案。只有包含回归惩罚和覆盖增益在内的 live Reward
+    严格超过阈值时才 Commit；否则 Rollback。
 
     \item \textbf{更新持久状态}：
     \begin{itemize}

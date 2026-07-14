@@ -1,5 +1,6 @@
 """Metrics for memory retrieval and LongMemEval answer quality."""
 
+import math
 import re
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
@@ -102,6 +103,67 @@ def compute_retrieval_metrics(
     }
 
 
+def compute_longmemeval_retrieval_metrics(
+    ranked_memories: Sequence[Any],
+    answer_source_ids: Iterable[str],
+    *,
+    all_memory_items: Sequence[Any],
+    k_values: Sequence[int] = (5, 10, 20, 30),
+    eligible: bool = True,
+    exclusion_reason: str = "",
+) -> Dict[str, Any]:
+    """Compute UnifiedMem/LongMemEval-style Recall and nDCG.
+
+    LongMemEval evaluates ranked session values with binary relevance. Our
+    values are compressed memory chunks, so a chunk is relevant when its
+    provenance intersects a gold answer session. Recall-any/all still checks
+    whether any/all gold source sessions are represented in the top-k chunks;
+    nDCG ranks the corresponding binary-relevant compressed values.
+    """
+
+    normalized_ks = sorted({int(value) for value in k_values if int(value) > 0})
+    result: Dict[str, Any] = {
+        "eligible": bool(eligible),
+        "exclusion_reason": str(exclusion_reason or ""),
+        "k_values": normalized_ks,
+        "adaptation": "compressed_value_with_answer_session_provenance",
+    }
+    if not eligible:
+        for k in normalized_ks:
+            result[f"recall_any@{k}"] = None
+            result[f"recall_all@{k}"] = None
+            result[f"ndcg_any@{k}"] = None
+        return result
+
+    gold_sources = {str(item) for item in answer_source_ids if str(item)}
+    ranked = [_item_dict(item) for item in ranked_memories]
+    full_memory = [_item_dict(item) for item in all_memory_items]
+    ranked_source_sets = [_source_ids(item, gold_sources) for item in ranked]
+    full_relevances = [
+        1.0 if _source_ids(item, gold_sources) & gold_sources else 0.0
+        for item in full_memory
+    ]
+
+    for k in normalized_ks:
+        top_source_sets = ranked_source_sets[:k]
+        recalled_sources = (
+            set().union(*top_source_sets) & gold_sources if top_source_sets else set()
+        )
+        top_relevances = [
+            1.0 if source_ids & gold_sources else 0.0
+            for source_ids in top_source_sets
+        ]
+        ideal_relevances = sorted(full_relevances, reverse=True)
+        ideal_dcg = _longmemeval_dcg(ideal_relevances, k)
+        actual_dcg = _longmemeval_dcg(top_relevances, k)
+        result[f"recall_any@{k}"] = float(bool(recalled_sources))
+        result[f"recall_all@{k}"] = float(
+            bool(gold_sources) and all(source in recalled_sources for source in gold_sources)
+        )
+        result[f"ndcg_any@{k}"] = actual_dcg / ideal_dcg if ideal_dcg else 0.0
+    return result
+
+
 def memory_size_metrics(memory_items: Sequence[Any], raw_session_chars: int = 0) -> Dict[str, Any]:
     items = [_item_dict(item) for item in memory_items]
     contents = [str(item.get("content") or item.get("text") or "") for item in items]
@@ -201,6 +263,18 @@ def _token_f1(gold_tokens: Sequence[str], candidate_tokens: Sequence[str]) -> fl
     precision = overlap / len(candidate_tokens)
     recall = overlap / len(gold_tokens)
     return 2.0 * precision * recall / (precision + recall)
+
+
+def _longmemeval_dcg(relevances: Sequence[float], k: int) -> float:
+    """Match LongMemEval's released dcg implementation exactly."""
+
+    values = [float(value) for value in relevances[:k]]
+    if not values:
+        return 0.0
+    score = values[0]
+    for zero_based_index, relevance in enumerate(values[1:], start=1):
+        score += relevance / math.log2(zero_based_index + 1)
+    return score
 
 
 def _is_unknown(normalized: str) -> bool:

@@ -122,7 +122,9 @@ The reported `accuracy` uses every requested case as the denominator. `evaluated
 
 ## Qwen3 Fixed-Memory QA Benchmark
 
-`evaluate_memory_qa.sh` is the end-to-end benchmark for the final fixed memories. It indexes `longmemeval_s_cleaned.json` by `question_id`, maps each `memory_states/<case_id>.json` to its question, answer, question type, date, and `answer_session_ids`, retrieves with the same `dense_structured` Contriever configuration as training, and sends only the retrieved memories to the answer model. Gold answers and source annotations are used only after generation for metrics.
+`evaluate_memory_qa.sh` is the end-to-end benchmark for the final fixed memories. It indexes `longmemeval_s_cleaned.json` by `question_id`, maps each `memory_states/<case_id>.json` to its question, answer, question type, date, and answer-session provenance, retrieves with the same `dense_structured` Contriever configuration as training, and sends only the retrieved memories to the answer model. Gold answers and source annotations are used only after generation for metrics.
+
+The evaluator follows the [UnifiedMem paper](https://arxiv.org/abs/2601.01280) and LongMemEval reporting protocol: `R@5`, `R@10`, `N@5`, `N@10`, question-type-aware LLM answer judging, and end-to-end Answer Accuracy. These memories are derived Key values rather than raw sessions, so the paper's Value=Key setting is used and the answer model receives the top 20 values by default. Retrieval is also ranked through 30 values for the released evaluator's diagnostic cutoffs.
 
 Start Qwen3 with an explicit served-model alias so the client model name is unambiguous:
 
@@ -139,7 +141,7 @@ CUDA_VISIBLE_DEVICES=4 /mnt/local2/wxy/envs/new_verl/bin/python \
   --api-key eval-local-key
 ```
 
-Then run the benchmark. Supplying `GRAPHS` makes the test graph split the denominator, so a missing memory file is counted as an end-to-end failure instead of silently disappearing:
+Then run the benchmark. Supplying `GRAPHS` makes the test graph split the denominator, so a missing memory file is counted as an end-to-end failure instead of silently disappearing. It also enables the paired CaseGraph baseline by default.
 
 ```bash
 PYTHON_BIN=/mnt/local2/wxy/envs/new_verl/bin/python \
@@ -151,20 +153,35 @@ ANSWER_API_KEY=eval-local-key \
 RETRIEVER_MODEL_NAME=/mnt/local2/wxy/models/contriever \
 RETRIEVER_REQUIRE_MODEL=true \
 RETRIEVER_DEVICE=cpu \
-JUDGE_MODE=llm \
+ANSWER_TOP_K=20 \
+RETRIEVAL_K_VALUES=5,10,20,30 \
+JUDGE_MODE=deepseek \
+DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
+DEEPSEEK_MODEL=deepseek-v4-flash \
+DEEPSEEK_THINKING=disabled \
+CASE_GRAPH_BASELINE=true \
 ./scripts/evaluate_memory_qa.sh
 ```
 
 For faster retrieval on a separate free GPU, launch the evaluator with, for example, `CUDA_VISIBLE_DEVICES=5 RETRIEVER_DEVICE=cuda:0`. Inside that process physical GPU 5 is named `cuda:0`. CPU is the conservative default because Contriever is small enough to run there and it avoids competing with the vLLM answer server for GPU memory. Do not set `RETRIEVER_DEVICE=cuda:5` after restricting `CUDA_VISIBLE_DEVICES=5`.
 
-The output `memory_qa_results.json` contains per-case retrievals, Qwen answers, judge decisions, and these aggregate diagnostics:
+The output `memory_qa_results.json` contains per-case retrievals, Qwen answers, DeepSeek judge decisions, and these aggregate diagnostics:
 
-- `accuracy`: judged answer accuracy over every selected case; missing memories and runtime failures remain in the denominator.
+- `overall_score`: the single final score. It is end-to-end judged Answer Accuracy over every selected case; missing memories and runtime failures remain in the denominator.
+- `paper_metrics.R@5` and `paper_metrics.R@10`: strict all-answer-session recall. Every required answer source must be represented in the top K compressed memory values.
+- `paper_metrics.N@5` and `paper_metrics.N@10`: nDCG with binary relevance, using answer-session provenance overlap.
+- `paper_metrics.answer_accuracy`: the same value as `overall_score`. Retrieval metrics are diagnostics and are not averaged into a synthetic composite score in the paper.
 - `exact_match_accuracy` and `mean_token_f1`: deterministic answer metrics independent of the LLM judge.
 - `mean_memory_source_recall`: fraction of gold `answer_session_ids` attributed anywhere in the constructed memory. This diagnoses memory construction loss.
 - `mean_source_recall_at_k` and `source_hit_rate_at_k`: answer-source coverage after Contriever Top-K retrieval. This diagnoses retrieval loss.
 - `mean_retrieval_recall_given_memory`: retrieval recall conditioned on source evidence that exists in memory, separating retriever failures from construction failures.
 - `gold_answer_text_in_memory_rate` and `gold_answer_text_hit_rate_at_k`: lexical support checks. They are secondary because counts and paraphrases need not contain the literal gold answer.
 - `mean_memory_to_raw_char_ratio` and `mean_char_reduction`: compression relative to all raw sessions in each case.
+- `baseline`: the same evaluation over original CaseGraph entities and relationships instead of defender-built memory.
+- `comparison`: paired accuracy outcomes, method-minus-baseline retrieval deltas, and the refactored-to-graph memory-size ratio.
 
-`JUDGE_MODE=llm` reuses Qwen3 as the equivalence judge unless `JUDGE_API_BASE`, `JUDGE_MODEL`, and `JUDGE_API_KEY` point to a separate judge. This is convenient but not independent; report deterministic EM/F1 alongside it. Use `RESUME=true` to continue an interrupted run from the existing result JSON, and use `MAX_CASES=5` for a quick endpoint/retriever check before the full split.
+Each compressed chunk is considered retrieval-relevant when `metadata.source_ids` overlaps an official answer session. This is a provenance-based adaptation of session retrieval, so it should be reported as compressed-value retrieval rather than presented as raw-session retrieval. As in the released evaluator, abstention cases and cases without an answer label in a user turn are excluded from retrieval averages, but they remain in end-to-end Answer Accuracy.
+
+`JUDGE_MODE=deepseek` is the default and uses the official question-type-specific LongMemEval criteria: complete-answer matching, temporal off-by-one tolerance, latest-answer handling for knowledge updates, partial-rubric acceptance for preference questions, and explicit unanswerability for abstention. Set `DEEPSEEK_API_KEY`; `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`, and `DEEPSEEK_THINKING` remain configurable. `JUDGE_MODE=llm` is still available for another OpenAI-compatible judge, and `JUDGE_MODE=string` is a deterministic diagnostic only.
+
+The CaseGraph baseline contains one retrieval value per non-target entity and relationship. It excludes raw sessions, the graph's `target` object, and any `evaluator_target_safeguard` answer node or edge, so target labels cannot leak into the answer context. Both methods use the same selected cases, Contriever settings, top-k, Qwen answer agent, and DeepSeek judge. Paired answer accuracy is the clean comparison; cross-method `R@K`/`N@K` deltas are diagnostic because graph values and refactored chunks have different granularity. Set `CASE_GRAPH_BASELINE=false` to disable the extra calls. Use `RESUME=true` to continue schema-v3 results, and use `MAX_CASES=5` for a quick endpoint/retriever check before the full split.

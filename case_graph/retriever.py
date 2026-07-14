@@ -272,7 +272,23 @@ class DenseStructuredMemoryRetriever:
         scored_points.sort(key=lambda item: (-item[0], item[2].chunk_index, item[2].point_type))
 
         if self.retrieval_mode == "flatten":
-            candidate_points = scored_points[: max(self.top_k_points, top_k)]
+            candidate_limit = min(
+                len(scored_points),
+                max(self.top_k_points, top_k),
+            )
+            # Several high-scoring keys can map to one value; keep expanding
+            # until the requested number of distinct memory values is available.
+            while candidate_limit < len(scored_points):
+                unique_values = {
+                    item[2].chunk_index for item in scored_points[:candidate_limit]
+                }
+                if len(unique_values) >= top_k:
+                    break
+                candidate_limit = min(
+                    len(scored_points),
+                    max(candidate_limit * 2, candidate_limit + 1),
+                )
+            candidate_points = scored_points[:candidate_limit]
         else:
             candidate_points = scored_points
 

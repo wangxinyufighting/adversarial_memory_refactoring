@@ -1,9 +1,13 @@
 """Evaluation helpers for adversarial memory experiments."""
 
 from .memory_qa import (
+    LongMemEvalAnswerJudge,
     LongMemEvalMemoryAnswerAgent,
     MemoryQuestion,
+    case_graph_to_memory_store,
+    compare_memory_qa_results,
     evaluate_memory_question,
+    load_case_graphs,
     summarize_memory_qa,
 )
 from .memory_construction import (
@@ -18,7 +22,11 @@ from .memory_construction import (
 
 __all__ = [
     "LongMemEvalMemoryAnswerAgent",
+    "LongMemEvalAnswerJudge",
     "MemoryQuestion",
+    "case_graph_to_memory_store",
+    "compare_memory_qa_results",
+    "load_case_graphs",
     "CaseConstructionResult",
     "ConstructionStepTrace",
     "DefenderCheckpointPolicy",

@@ -16,12 +16,15 @@ from case_graph.llm import OpenAIChatClient
 from case_graph.retriever import MemoryStore, retriever_config_from_mapping
 
 from .memory_qa import (
+    LongMemEvalAnswerJudge,
     LongMemEvalMemoryAnswerAgent,
     MemoryQuestion,
+    case_graph_to_memory_store,
+    compare_memory_qa_results,
     discover_memory_case_ids,
     evaluate_memory_question,
     failed_result,
-    load_graph_questions,
+    load_case_graphs,
     load_longmemeval_questions,
     merge_question_metadata,
     summarize_memory_qa,
@@ -51,6 +54,22 @@ def parse_args() -> argparse.Namespace:
             "the denominator and cases with missing memory count as failures."
         ),
     )
+    baseline_group = parser.add_mutually_exclusive_group()
+    baseline_group.add_argument(
+        "--case-graph-baseline",
+        dest="case_graph_baseline",
+        action="store_true",
+        default=False,
+        help=(
+            "Also answer every target from the original target-safe CaseGraph entity/edge "
+            "memory and report a paired comparison. Requires --graphs."
+        ),
+    )
+    baseline_group.add_argument(
+        "--no-case-graph-baseline",
+        dest="case_graph_baseline",
+        action="store_false",
+    )
     parser.add_argument("--coverage-dir", help="Defaults to the sibling coverage_states directory.")
     parser.add_argument(
         "--require-certified-memory",
@@ -65,7 +84,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-every", type=int, default=1)
 
     parser.add_argument("--training-config", default="configs/online_grpo.yaml")
-    parser.add_argument("--top-k", type=int)
+    parser.add_argument(
+        "--answer-top-k",
+        type=int,
+        help="Number of compressed memory values given to the answer model (paper Value=Key default: 20).",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        help="Deprecated alias for --answer-top-k.",
+    )
+    parser.add_argument(
+        "--retrieval-k-values",
+        default="5,10,20,30",
+        help="Comma-separated retrieval cutoffs used by the released UnifiedMem evaluator.",
+    )
     parser.add_argument("--top-k-points", type=int)
     parser.add_argument("--min-score", type=float)
     parser.add_argument("--retriever-type")
@@ -109,16 +142,24 @@ def parse_args() -> argparse.Namespace:
         help="Qwen3 defaults to disabled thinking for deterministic JSON answers.",
     )
 
-    parser.add_argument("--judge-mode", choices=("llm", "string"), default="llm")
-    parser.add_argument("--judge-api-base")
-    parser.add_argument("--judge-model")
-    parser.add_argument("--judge-api-key")
+    parser.add_argument(
+        "--judge-mode",
+        choices=("deepseek", "llm", "string"),
+        default=os.environ.get("JUDGE_MODE", "deepseek"),
+    )
+    parser.add_argument("--judge-api-base", default=os.environ.get("JUDGE_API_BASE"))
+    parser.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL"))
+    parser.add_argument("--judge-api-key", default=os.environ.get("JUDGE_API_KEY"))
     parser.add_argument("--judge-timeout", type=int, default=180)
-    parser.add_argument("--judge-max-output-tokens", type=int, default=200)
+    parser.add_argument("--judge-max-output-tokens", type=int, default=10)
     parser.add_argument(
         "--judge-thinking",
         choices=("disabled", "enabled", "server_default"),
-        default="server_default",
+        default=(
+            os.environ.get("JUDGE_THINKING")
+            or os.environ.get("DEEPSEEK_THINKING")
+            or "disabled"
+        ),
     )
     parser.add_argument("--skip-endpoint-preflight", action="store_true")
     return parser.parse_args()
@@ -141,6 +182,8 @@ def main() -> None:
             "Set ANSWER_MODEL or pass --answer-model. It must exactly match an id from "
             "the answer server's /v1/models response."
         )
+    if args.case_graph_baseline and not args.graphs:
+        raise SystemExit("--case-graph-baseline requires --graphs.")
 
     memory_dir = Path(args.memory_dir)
     output_path = (
@@ -155,7 +198,11 @@ def main() -> None:
     )
 
     dataset_questions = load_longmemeval_questions(args.dataset)
-    graph_questions = load_graph_questions(args.graphs) if args.graphs else {}
+    case_graphs = load_case_graphs(args.graphs) if args.graphs else {}
+    graph_questions = {
+        case_id: MemoryQuestion.from_graph(graph)
+        for case_id, graph in case_graphs.items()
+    }
     questions = merge_question_metadata(dataset_questions, graph_questions)
     memory_case_ids = discover_memory_case_ids(memory_dir)
     if graph_questions:
@@ -184,10 +231,26 @@ def main() -> None:
             + ", ".join(missing_question_ids[:20])
         )
 
+    if (
+        args.answer_top_k is not None
+        and args.top_k is not None
+        and args.answer_top_k != args.top_k
+    ):
+        raise SystemExit("--answer-top-k and --top-k disagree; set only one value.")
+    retrieval_k_values = _parse_positive_ints(args.retrieval_k_values)
+    if not retrieval_k_values:
+        raise SystemExit("--retrieval-k-values must contain at least one positive integer.")
+
     training_config = _load_training_config(args.training_config)
-    top_k = int(_setting(args.top_k, training_config, "top_k", 8))
+    answer_top_k = int(
+        args.answer_top_k
+        if args.answer_top_k is not None
+        else args.top_k if args.top_k is not None else 20
+    )
+    if answer_top_k < 1:
+        raise SystemExit("--answer-top-k must be >= 1.")
     top_k_points = int(_setting(args.top_k_points, training_config, "top_k_points", 32))
-    min_score = float(_setting(args.min_score, training_config, "min_score", 0.0))
+    min_score = float(args.min_score if args.min_score is not None else -2.0)
     retriever_config = _retriever_config(args, training_config, top_k_points)
 
     answer_client = OpenAIChatClient(
@@ -201,7 +264,7 @@ def main() -> None:
         _preflight_endpoint(answer_client, "answer")
 
     judge_client = None
-    if args.judge_mode == "llm":
+    if args.judge_mode in {"deepseek", "llm"}:
         judge_client = _build_judge_client(args, answer_client)
         if not args.skip_endpoint_preflight and judge_client is not answer_client:
             _preflight_endpoint(judge_client, "judge")
@@ -209,14 +272,17 @@ def main() -> None:
         client=answer_client,
         max_output_tokens=args.answer_max_output_tokens,
     )
-    judge = AnswerEquivalenceJudge(
-        client=judge_client,
-        max_output_tokens=args.judge_max_output_tokens,
-        use_llm=args.judge_mode == "llm",
-    )
+    if args.judge_mode in {"deepseek", "llm"}:
+        judge = LongMemEvalAnswerJudge(
+            client=judge_client,
+            max_output_tokens=args.judge_max_output_tokens,
+            provider=args.judge_mode,
+        )
+    else:
+        judge = AnswerEquivalenceJudge(use_llm=False)
 
     base_payload = {
-        "schema_version": 1,
+        "schema_version": 3,
         "dataset": str(args.dataset),
         "graphs": str(args.graphs or ""),
         "memory_dir": str(memory_dir),
@@ -226,118 +292,259 @@ def main() -> None:
             "answer_api_base": answer_client.base_url,
             "answer_model": answer_client.model,
             "answer_thinking": args.answer_thinking,
+            "answer_max_output_tokens": args.answer_max_output_tokens,
             "judge_mode": args.judge_mode,
             "judge_api_base": judge_client.base_url if judge_client is not None else "",
             "judge_model": judge_client.model if judge_client is not None else "",
+            "judge_thinking": (
+                args.answer_thinking
+                if judge_client is answer_client
+                else args.judge_thinking
+            ),
+            "judge_max_output_tokens": args.judge_max_output_tokens,
             "retriever": retriever_config,
-            "top_k": top_k,
+            "answer_top_k": answer_top_k,
+            "retrieval_k_values": retrieval_k_values,
             "top_k_points": top_k_points,
             "min_score": min_score,
             "require_certified_memory": args.require_certified_memory,
+            "case_graph_baseline": args.case_graph_baseline,
+            "case_graph_baseline_definition": (
+                "target-safe original graph entities and relationships; no raw sessions"
+            ),
+            "paper_protocol": {
+                "benchmark": "LongMemEval",
+                "memory_value_type": "Key",
+                "primary_retrieval_metrics": ["R@5", "R@10", "N@5", "N@10"],
+                "primary_overall_metric": "answer_accuracy",
+            },
         },
     }
-    prior_results = _load_prior_results(output_path) if args.resume else []
+    resume_allowed = args.resume and _resume_compatible(output_path, base_payload)
+    prior_results = _load_prior_results(output_path) if resume_allowed else []
+    stale_prior_count = sum(
+        "longmemeval_retrieval_metrics" not in item for item in prior_results
+    )
+    if stale_prior_count:
+        logger.warning(
+            "Ignoring %d resumed results written before the paper-metric schema.",
+            stale_prior_count,
+        )
+    selected_id_set = set(selected_ids)
     results_by_id = {
         str(item.get("case_id")): item
         for item in prior_results
-        if str(item.get("case_id")) in set(selected_ids)
+        if str(item.get("case_id")) in selected_id_set
+        and "longmemeval_retrieval_metrics" in item
+    }
+    prior_baseline_results = (
+        _load_prior_baseline_results(output_path)
+        if resume_allowed and args.case_graph_baseline
+        else []
+    )
+    baseline_results_by_id = {
+        str(item.get("case_id")): item
+        for item in prior_baseline_results
+        if str(item.get("case_id")) in selected_id_set
+        and "longmemeval_retrieval_metrics" in item
     }
     logger.info(
-        "Evaluating %d cases: answer_model=%s retriever=%s model=%s device=%s top_k=%d",
+        "Evaluating %d cases: answer_model=%s retriever=%s model=%s device=%s answer_top_k=%d retrieval_k=%s",
         len(selected_ids),
         answer_client.model,
         retriever_config.get("type"),
         retriever_config.get("model_name"),
         retriever_config.get("device") or "auto",
-        top_k,
+        answer_top_k,
+        retrieval_k_values,
     )
+    if args.case_graph_baseline:
+        logger.info(
+            "CaseGraph baseline enabled: using the same retriever, top-k, answer model, "
+            "and judge over target-safe entity/relationship values."
+        )
 
     completed_now = 0
     for index, case_id in enumerate(selected_ids, start=1):
-        if case_id in results_by_id:
+        method_pending = case_id not in results_by_id
+        baseline_pending = args.case_graph_baseline and case_id not in baseline_results_by_id
+        if not method_pending and not baseline_pending:
             logger.info("[%d/%d] %s resumed", index, len(selected_ids), case_id)
             continue
         question = questions[case_id]
-        memory_path = memory_dir / f"{case_id}.json"
-        coverage_state = _load_json_if_object(coverage_dir / f"{case_id}.json")
-        memory_store: Optional[MemoryStore] = None
-        if not memory_path.exists():
-            result = failed_result(
-                question,
-                status="missing_memory",
-                reason=f"No memory file found at {memory_path}.",
-                memory_path=str(memory_path),
-                coverage_state=coverage_state,
-            )
-        else:
-            try:
-                memory_store = MemoryStore.load(memory_path)
-            except Exception as exc:
+        if method_pending:
+            memory_path = memory_dir / f"{case_id}.json"
+            coverage_state = _load_json_if_object(coverage_dir / f"{case_id}.json")
+            memory_store: Optional[MemoryStore] = None
+            if not memory_path.exists():
                 result = failed_result(
                     question,
-                    status="memory_load_error",
-                    reason=str(exc),
+                    status="missing_memory",
+                    reason=f"No memory file found at {memory_path}.",
                     memory_path=str(memory_path),
                     coverage_state=coverage_state,
+                    retrieval_k_values=retrieval_k_values,
                 )
             else:
-                certification = str(coverage_state.get("completion_status") or "")
-                if args.require_certified_memory and certification != "done":
+                try:
+                    memory_store = MemoryStore.load(memory_path)
+                except Exception as exc:
                     result = failed_result(
                         question,
-                        status="incomplete_memory",
-                        reason=(
-                            "Coverage certification is required but completion_status "
-                            f"is {certification or 'missing'}."
-                        ),
+                        status="memory_load_error",
+                        reason=str(exc),
                         memory_path=str(memory_path),
-                        memory_store=memory_store,
                         coverage_state=coverage_state,
+                        retrieval_k_values=retrieval_k_values,
                     )
                 else:
-                    try:
-                        result = evaluate_memory_question(
-                            question,
-                            memory_store,
-                            answer_agent,
-                            judge,
-                            retriever_config=retriever_config,
-                            top_k=top_k,
-                            min_score=min_score,
-                            memory_path=str(memory_path),
-                            coverage_state=coverage_state,
-                        )
-                    except Exception as exc:
-                        logger.exception("Case %s evaluation failed", case_id)
+                    certification = str(coverage_state.get("completion_status") or "")
+                    if args.require_certified_memory and certification != "done":
                         result = failed_result(
                             question,
-                            status="evaluation_error",
-                            reason=str(exc),
+                            status="incomplete_memory",
+                            reason=(
+                                "Coverage certification is required but completion_status "
+                                f"is {certification or 'missing'}."
+                            ),
                             memory_path=str(memory_path),
                             memory_store=memory_store,
                             coverage_state=coverage_state,
+                            retrieval_k_values=retrieval_k_values,
                         )
+                    else:
+                        try:
+                            result = evaluate_memory_question(
+                                question,
+                                memory_store,
+                                answer_agent,
+                                judge,
+                                retriever_config=retriever_config,
+                                top_k=answer_top_k,
+                                retrieval_k_values=retrieval_k_values,
+                                min_score=min_score,
+                                memory_path=str(memory_path),
+                                coverage_state=coverage_state,
+                            )
+                        except Exception as exc:
+                            logger.exception("Case %s refactored-memory evaluation failed", case_id)
+                            result = failed_result(
+                                question,
+                                status="evaluation_error",
+                                reason=str(exc),
+                                memory_path=str(memory_path),
+                                memory_store=memory_store,
+                                coverage_state=coverage_state,
+                                retrieval_k_values=retrieval_k_values,
+                            )
+            result["memory_source"] = "refactored_memory"
+            results_by_id[case_id] = result
+        else:
+            result = results_by_id[case_id]
 
-        results_by_id[case_id] = result
+        baseline_result: Optional[Dict[str, Any]] = baseline_results_by_id.get(case_id)
+        if baseline_pending:
+            graph = case_graphs.get(case_id)
+            graph_label = _case_graph_label(args.graphs, case_id)
+            if graph is None:
+                baseline_result = failed_result(
+                    question,
+                    status="missing_case_graph",
+                    reason=f"No CaseGraph found for {case_id}.",
+                    memory_path=graph_label,
+                    retrieval_k_values=retrieval_k_values,
+                )
+            else:
+                graph_memory = case_graph_to_memory_store(graph)
+                try:
+                    baseline_result = evaluate_memory_question(
+                        question,
+                        graph_memory,
+                        answer_agent,
+                        judge,
+                        retriever_config=retriever_config,
+                        top_k=answer_top_k,
+                        retrieval_k_values=retrieval_k_values,
+                        min_score=min_score,
+                        memory_path=graph_label,
+                    )
+                except Exception as exc:
+                    logger.exception("Case %s CaseGraph baseline evaluation failed", case_id)
+                    baseline_result = failed_result(
+                        question,
+                        status="baseline_evaluation_error",
+                        reason=str(exc),
+                        memory_path=graph_label,
+                        memory_store=graph_memory,
+                        retrieval_k_values=retrieval_k_values,
+                    )
+            baseline_result["memory_source"] = "case_graph"
+            baseline_retrieval = baseline_result.get("longmemeval_retrieval_metrics")
+            if isinstance(baseline_retrieval, dict):
+                baseline_retrieval["adaptation"] = (
+                    "case_graph_value_with_answer_session_provenance"
+                )
+            baseline_results_by_id[case_id] = baseline_result
+
         completed_now += 1
         ordered_results = [results_by_id[item] for item in selected_ids if item in results_by_id]
         running = summarize_memory_qa(ordered_results)
         logger.info(
-            "[%d/%d] %s status=%s correct=%s running_accuracy=%.4f source_recall@%d=%.4f",
+            "[%d/%d] %s status=%s correct=%s running_score=%.4f R@5=%s N@5=%s",
             index,
             len(selected_ids),
             case_id,
             result.get("status"),
             result.get("correct"),
-            running["accuracy"],
-            top_k,
-            float((result.get("retrieval_metrics") or {}).get("source_recall") or 0.0),
+            running["overall_score"],
+            _format_metric(
+                (result.get("longmemeval_retrieval_metrics") or {}).get("recall_all@5")
+            ),
+            _format_metric(
+                (result.get("longmemeval_retrieval_metrics") or {}).get("ndcg_any@5")
+            ),
         )
+        if args.case_graph_baseline and baseline_result is not None:
+            ordered_baselines = [
+                baseline_results_by_id[item]
+                for item in selected_ids
+                if item in baseline_results_by_id
+            ]
+            baseline_running = summarize_memory_qa(ordered_baselines)
+            logger.info(
+                "[%d/%d] %s case_graph_status=%s correct=%s "
+                "running_case_graph_score=%.4f paired_delta=%.4f",
+                index,
+                len(selected_ids),
+                case_id,
+                baseline_result.get("status"),
+                baseline_result.get("correct"),
+                baseline_running["overall_score"],
+                running["overall_score"] - baseline_running["overall_score"],
+            )
         if completed_now % args.save_every == 0:
-            _write_output(output_path, base_payload, selected_ids, results_by_id)
+            _write_output(
+                output_path,
+                base_payload,
+                selected_ids,
+                results_by_id,
+                baseline_results_by_id if args.case_graph_baseline else None,
+            )
 
-    payload = _write_output(output_path, base_payload, selected_ids, results_by_id)
+    payload = _write_output(
+        output_path,
+        base_payload,
+        selected_ids,
+        results_by_id,
+        baseline_results_by_id if args.case_graph_baseline else None,
+    )
+    print("Refactored memory:")
     print(json.dumps(payload["summary"], ensure_ascii=False, indent=2))
+    if args.case_graph_baseline:
+        print("CaseGraph baseline:")
+        print(json.dumps(payload["baseline"]["summary"], ensure_ascii=False, indent=2))
+        print("Paired comparison:")
+        print(json.dumps(payload["comparison"], ensure_ascii=False, indent=2))
     print(f"Detailed results: {output_path}")
 
 
@@ -345,6 +552,32 @@ def _build_judge_client(
     args: argparse.Namespace,
     answer_client: OpenAIChatClient,
 ) -> OpenAIChatClient:
+    if args.judge_mode == "deepseek":
+        api_key = args.judge_api_key or os.environ.get("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise SystemExit(
+                "JUDGE_MODE=deepseek requires DEEPSEEK_API_KEY or JUDGE_API_KEY."
+            )
+        thinking = (
+            None
+            if args.judge_thinking == "server_default"
+            else {"type": args.judge_thinking}
+        )
+        return OpenAIChatClient(
+            model=(
+                args.judge_model
+                or os.environ.get("DEEPSEEK_MODEL")
+                or "deepseek-v4-flash"
+            ),
+            api_key=api_key,
+            base_url=(
+                args.judge_api_base
+                or os.environ.get("DEEPSEEK_BASE_URL")
+                or "https://api.deepseek.com"
+            ).rstrip("/"),
+            timeout=args.judge_timeout,
+            thinking=thinking,
+        )
     if not args.judge_api_base and not args.judge_model and not args.judge_api_key:
         return answer_client
     return OpenAIChatClient(
@@ -439,6 +672,39 @@ def _flatten_case_ids(values: List[str]) -> List[str]:
     return result
 
 
+def _parse_positive_ints(value: str) -> List[int]:
+    try:
+        return sorted(
+            {
+                int(item.strip())
+                for item in str(value or "").split(",")
+                if item.strip() and int(item.strip()) > 0
+            }
+        )
+    except ValueError as exc:
+        raise SystemExit(
+            f"Invalid --retrieval-k-values {value!r}; expected comma-separated integers."
+        ) from exc
+
+
+def _format_metric(value: Any) -> str:
+    if value is None:
+        return "excluded"
+    try:
+        return f"{float(value):.4f}"
+    except (TypeError, ValueError):
+        return "invalid"
+
+
+def _case_graph_label(graphs: Optional[str], case_id: str) -> str:
+    if not graphs:
+        return f"case_graph:{case_id}"
+    path = Path(graphs)
+    if path.is_dir():
+        return str(path / f"{case_id}.case_graph.json")
+    return str(path)
+
+
 def _load_json_if_object(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
@@ -459,11 +725,65 @@ def _load_prior_results(path: Path) -> List[Dict[str, Any]]:
     return [item for item in results if isinstance(item, dict)]
 
 
+def _load_prior_baseline_results(path: Path) -> List[Dict[str, Any]]:
+    payload = _load_json_if_object(path)
+    baseline = payload.get("baseline", {})
+    results = baseline.get("results", []) if isinstance(baseline, dict) else []
+    if not isinstance(results, list):
+        return []
+    logger.info("Loaded %d prior CaseGraph baseline results from %s", len(results), path)
+    return [item for item in results if isinstance(item, dict)]
+
+
+def _resume_compatible(path: Path, current: Dict[str, Any]) -> bool:
+    if not path.exists():
+        return True
+    prior = _load_json_if_object(path)
+    if prior.get("schema_version") != current.get("schema_version"):
+        logger.warning(
+            "Ignoring resumed results because schema_version changed from %r to %r.",
+            prior.get("schema_version"),
+            current.get("schema_version"),
+        )
+        return False
+
+    prior_config = prior.get("config") if isinstance(prior.get("config"), dict) else {}
+    current_config = (
+        current.get("config") if isinstance(current.get("config"), dict) else {}
+    )
+    compared_keys = (
+        "answer_api_base",
+        "answer_model",
+        "answer_thinking",
+        "answer_max_output_tokens",
+        "judge_mode",
+        "judge_api_base",
+        "judge_model",
+        "judge_thinking",
+        "judge_max_output_tokens",
+        "retriever",
+        "answer_top_k",
+        "retrieval_k_values",
+        "min_score",
+    )
+    changed = [
+        key for key in compared_keys if prior_config.get(key) != current_config.get(key)
+    ]
+    if changed:
+        logger.warning(
+            "Ignoring resumed results because evaluation settings changed: %s.",
+            ", ".join(changed),
+        )
+        return False
+    return True
+
+
 def _write_output(
     output_path: Path,
     base_payload: Dict[str, Any],
     selected_ids: List[str],
     results_by_id: Dict[str, Dict[str, Any]],
+    baseline_results_by_id: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     results = [results_by_id[case_id] for case_id in selected_ids if case_id in results_by_id]
     payload = {
@@ -472,6 +792,26 @@ def _write_output(
         "summary": summarize_memory_qa(results),
         "results": results,
     }
+    if baseline_results_by_id is not None:
+        baseline_results = [
+            baseline_results_by_id[case_id]
+            for case_id in selected_ids
+            if case_id in baseline_results_by_id
+        ]
+        baseline_summary = summarize_memory_qa(baseline_results)
+        baseline_summary["paper_metrics"]["retrieval_unit"] = (
+            "case_graph_entity_or_relationship"
+        )
+        payload["baseline"] = {
+            "name": "case_graph",
+            "definition": (
+                "Original CaseGraph entity and relationship values after removing target "
+                "metadata and evaluator-injected answer safeguards. Raw sessions are not used."
+            ),
+            "summary": baseline_summary,
+            "results": baseline_results,
+        }
+        payload["comparison"] = compare_memory_qa_results(results, baseline_results)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),

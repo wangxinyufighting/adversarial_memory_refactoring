@@ -12,6 +12,24 @@ TRAINING_CONFIG=${TRAINING_CONFIG:-configs/online_grpo.yaml}
 ANSWER_API_BASE=${ANSWER_API_BASE:-http://localhost:8003/v1}
 ANSWER_MODEL=${ANSWER_MODEL:-${ATTACKER_MODEL:-/mnt/local2/wxy/models/Qwen3-0.6B}}
 ANSWER_API_KEY=${ANSWER_API_KEY:-${ATTACKER_API_KEY:-dummy-key}}
+ANSWER_TOP_K=${ANSWER_TOP_K:-${TOP_K:-20}}
+RETRIEVAL_K_VALUES=${RETRIEVAL_K_VALUES:-5,10,20,30}
+JUDGE_MODE=${JUDGE_MODE:-deepseek}
+CASE_GRAPH_BASELINE=${CASE_GRAPH_BASELINE:-${RUN_CASE_GRAPH_BASELINE:-}}
+if [[ -z "${CASE_GRAPH_BASELINE}" ]]; then
+  if [[ -n "${GRAPHS:-}" ]]; then
+    CASE_GRAPH_BASELINE=true
+  else
+    CASE_GRAPH_BASELINE=false
+  fi
+fi
+
+if [[ "${JUDGE_MODE}" == "deepseek" ]]; then
+  JUDGE_API_BASE=${JUDGE_API_BASE:-${DEEPSEEK_BASE_URL:-https://api.deepseek.com}}
+  JUDGE_MODEL=${JUDGE_MODEL:-${DEEPSEEK_MODEL:-deepseek-v4-flash}}
+  JUDGE_API_KEY=${JUDGE_API_KEY:-${DEEPSEEK_API_KEY:-}}
+  JUDGE_THINKING=${JUDGE_THINKING:-${DEEPSEEK_THINKING:-disabled}}
+fi
 
 is_true() {
   case "${1:-}" in
@@ -28,9 +46,12 @@ args=(
   --answer-api-base "${ANSWER_API_BASE}"
   --answer-model "${ANSWER_MODEL}"
   --answer-api-key "${ANSWER_API_KEY}"
+  --answer-top-k "${ANSWER_TOP_K}"
+  --retrieval-k-values "${RETRIEVAL_K_VALUES}"
 )
 
 [[ -n "${GRAPHS:-}" ]] && args+=(--graphs "${GRAPHS}")
+is_true "${CASE_GRAPH_BASELINE}" && args+=(--case-graph-baseline)
 [[ -n "${COVERAGE_DIR:-}" ]] && args+=(--coverage-dir "${COVERAGE_DIR}")
 is_true "${REQUIRE_CERTIFIED_MEMORY:-}" && args+=(--require-certified-memory)
 [[ -n "${CASE_ID:-}" ]] && args+=(--case-id "${CASE_ID}")
@@ -39,7 +60,6 @@ is_true "${REQUIRE_CERTIFIED_MEMORY:-}" && args+=(--require-certified-memory)
 is_true "${RESUME:-}" && args+=(--resume)
 [[ -n "${SAVE_EVERY:-}" ]] && args+=(--save-every "${SAVE_EVERY}")
 
-[[ -n "${TOP_K:-}" ]] && args+=(--top-k "${TOP_K}")
 [[ -n "${TOP_K_POINTS:-}" ]] && args+=(--top-k-points "${TOP_K_POINTS}")
 [[ -n "${MIN_SCORE:-}" ]] && args+=(--min-score "${MIN_SCORE}")
 [[ -n "${RETRIEVER_TYPE:-}" ]] && args+=(--retriever-type "${RETRIEVER_TYPE}")
@@ -55,7 +75,7 @@ is_true "${ALLOW_RETRIEVER_FALLBACK:-}" && args+=(--allow-retriever-fallback)
 [[ -n "${ANSWER_TIMEOUT:-}" ]] && args+=(--answer-timeout "${ANSWER_TIMEOUT}")
 [[ -n "${ANSWER_MAX_OUTPUT_TOKENS:-}" ]] && args+=(--answer-max-output-tokens "${ANSWER_MAX_OUTPUT_TOKENS}")
 [[ -n "${ANSWER_THINKING:-}" ]] && args+=(--answer-thinking "${ANSWER_THINKING}")
-[[ -n "${JUDGE_MODE:-}" ]] && args+=(--judge-mode "${JUDGE_MODE}")
+args+=(--judge-mode "${JUDGE_MODE}")
 [[ -n "${JUDGE_API_BASE:-}" ]] && args+=(--judge-api-base "${JUDGE_API_BASE}")
 [[ -n "${JUDGE_MODEL:-}" ]] && args+=(--judge-model "${JUDGE_MODEL}")
 [[ -n "${JUDGE_API_KEY:-}" ]] && args+=(--judge-api-key "${JUDGE_API_KEY}")
@@ -69,7 +89,11 @@ echo "Memory directory: ${MEMORY_DIR}"
 echo "Dataset: ${DATASET}"
 echo "Answer model: ${ANSWER_MODEL}"
 echo "Answer API: ${ANSWER_API_BASE}"
+echo "Answer memory values: top-${ANSWER_TOP_K}"
+echo "Retrieval metric cutoffs: ${RETRIEVAL_K_VALUES}"
 echo "Retriever device: ${RETRIEVER_DEVICE:-from ${TRAINING_CONFIG}}"
+echo "Judge: ${JUDGE_MODE}${JUDGE_MODEL:+ (${JUDGE_MODEL})}"
+echo "CaseGraph baseline: ${CASE_GRAPH_BASELINE}"
 echo "Output: ${OUTPUT}"
 echo "======================================"
 
