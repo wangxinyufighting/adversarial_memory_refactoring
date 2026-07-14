@@ -568,7 +568,6 @@ def main() -> None:
         if completed_now % args.save_every == 0:
             _write_output(
                 output_path,
-                details_output_path,
                 base_payload,
                 selected_ids,
                 results_by_id,
@@ -577,7 +576,6 @@ def main() -> None:
 
     payload = _write_output(
         output_path,
-        details_output_path,
         base_payload,
         selected_ids,
         results_by_id,
