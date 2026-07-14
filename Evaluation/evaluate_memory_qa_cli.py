@@ -581,9 +581,8 @@ def main() -> None:
         results_by_id,
         baseline_results_by_id if args.case_graph_baseline else None,
     )
-    print(json.dumps(payload["paper_metrics"], ensure_ascii=False, indent=2))
-    print(f"Paper metrics: {output_path}")
-    print(f"Detailed per-case results: {details_output_path}")
+    print(json.dumps(payload["summary"]["paper_metrics"], ensure_ascii=False, indent=2))
+    print(f"Results: {output_path}")
 
 
 def _build_judge_client(
