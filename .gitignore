@@ -11,3 +11,5 @@ data/
 agent_memory.pdf
 plan.tex
 case_graph/__pycache__
+__pycache__/
+*.pyc
