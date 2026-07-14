@@ -128,6 +128,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--routing-min-nodes", type=int)
     parser.add_argument("--routing-attempts", type=int)
     parser.add_argument("--max-attack-failures", type=int, default=20)
+    parser.add_argument("--max-consecutive-proposal-failures", type=int, default=10)
     parser.add_argument("--max-retries-per-unit", type=int, default=3)
     parser.add_argument("--disable-compositional-probes", action="store_true")
     parser.add_argument("--trace-detail", choices=["compact", "full"], default="compact")
@@ -253,6 +254,7 @@ def main() -> None:
             routing_min_nodes=routing_min_nodes,
             routing_attempts=routing_attempts,
             max_attack_failures=args.max_attack_failures,
+            max_consecutive_proposal_failures=args.max_consecutive_proposal_failures,
             defender_max_output_tokens=args.defender_max_output_tokens,
             defender_proposal_retries=args.defender_proposal_retries,
             attacker_max_output_tokens=args.attacker_max_output_tokens,

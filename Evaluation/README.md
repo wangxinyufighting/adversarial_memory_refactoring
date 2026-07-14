@@ -119,3 +119,52 @@ LOCAL_API_KEY=eval-local-key \
 ```
 
 The reported `accuracy` uses every requested case as the denominator. `evaluated_accuracy` covers only certified cases that reached the answer stage. Use `--allow-incomplete-memory` only for diagnostics; it should not be used for the main benchmark number.
+
+## Qwen3 Fixed-Memory QA Benchmark
+
+`evaluate_memory_qa.sh` is the end-to-end benchmark for the final fixed memories. It indexes `longmemeval_s_cleaned.json` by `question_id`, maps each `memory_states/<case_id>.json` to its question, answer, question type, date, and `answer_session_ids`, retrieves with the same `dense_structured` Contriever configuration as training, and sends only the retrieved memories to the answer model. Gold answers and source annotations are used only after generation for metrics.
+
+Start Qwen3 with an explicit served-model alias so the client model name is unambiguous:
+
+```bash
+CUDA_VISIBLE_DEVICES=4 /mnt/local2/wxy/envs/new_verl/bin/python \
+  -m vllm.entrypoints.openai.api_server \
+  --model /mnt/local2/wxy/models/Qwen3-0.6B \
+  --served-model-name qwen3-0.6b \
+  --host localhost \
+  --port 8003 \
+  --dtype bfloat16 \
+  --max-model-len 16384 \
+  --gpu-memory-utilization 0.7 \
+  --api-key eval-local-key
+```
+
+Then run the benchmark. Supplying `GRAPHS` makes the test graph split the denominator, so a missing memory file is counted as an end-to-end failure instead of silently disappearing:
+
+```bash
+PYTHON_BIN=/mnt/local2/wxy/envs/new_verl/bin/python \
+MEMORY_DIR=outputs/evaluation/global_step_75_retry/memory_states \
+GRAPHS=outputs/longmemeval_split/case_graphs_test \
+ANSWER_API_BASE=http://localhost:8003/v1 \
+ANSWER_MODEL=qwen3-0.6b \
+ANSWER_API_KEY=eval-local-key \
+RETRIEVER_MODEL_NAME=/mnt/local2/wxy/models/contriever \
+RETRIEVER_REQUIRE_MODEL=true \
+RETRIEVER_DEVICE=cpu \
+JUDGE_MODE=llm \
+./scripts/evaluate_memory_qa.sh
+```
+
+For faster retrieval on a separate free GPU, launch the evaluator with, for example, `CUDA_VISIBLE_DEVICES=5 RETRIEVER_DEVICE=cuda:0`. Inside that process physical GPU 5 is named `cuda:0`. CPU is the conservative default because Contriever is small enough to run there and it avoids competing with the vLLM answer server for GPU memory. Do not set `RETRIEVER_DEVICE=cuda:5` after restricting `CUDA_VISIBLE_DEVICES=5`.
+
+The output `memory_qa_results.json` contains per-case retrievals, Qwen answers, judge decisions, and these aggregate diagnostics:
+
+- `accuracy`: judged answer accuracy over every selected case; missing memories and runtime failures remain in the denominator.
+- `exact_match_accuracy` and `mean_token_f1`: deterministic answer metrics independent of the LLM judge.
+- `mean_memory_source_recall`: fraction of gold `answer_session_ids` attributed anywhere in the constructed memory. This diagnoses memory construction loss.
+- `mean_source_recall_at_k` and `source_hit_rate_at_k`: answer-source coverage after Contriever Top-K retrieval. This diagnoses retrieval loss.
+- `mean_retrieval_recall_given_memory`: retrieval recall conditioned on source evidence that exists in memory, separating retriever failures from construction failures.
+- `gold_answer_text_in_memory_rate` and `gold_answer_text_hit_rate_at_k`: lexical support checks. They are secondary because counts and paraphrases need not contain the literal gold answer.
+- `mean_memory_to_raw_char_ratio` and `mean_char_reduction`: compression relative to all raw sessions in each case.
+
+`JUDGE_MODE=llm` reuses Qwen3 as the equivalence judge unless `JUDGE_API_BASE`, `JUDGE_MODEL`, and `JUDGE_API_KEY` point to a separate judge. This is convenient but not independent; report deterministic EM/F1 alongside it. Use `RESUME=true` to continue an interrupted run from the existing result JSON, and use `MAX_CASES=5` for a quick endpoint/retriever check before the full split.

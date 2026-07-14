@@ -1,6 +1,6 @@
 \documentclass[a4paper,11pt]{article}
 
-% 当前正式在线 GRPO 算法的中文技术说明
+% 可训练价值驱动 Attacker 与记忆重构 Defender 的联合算法说明
 \usepackage[UTF8]{ctex}
 \usepackage{amsmath}
 \usepackage{amssymb}
@@ -21,7 +21,8 @@
     arc=4pt,
     boxrule=0.6pt
 }
-\title{\textbf{基于 CaseGraph 的对抗式记忆重构：当前正式在线 GRPO 算法}}
+
+\title{\textbf{价值驱动的问题生成与记忆重构：可训练 Attacker--Defender 联合算法}}
 \author{}
 \date{}
 
@@ -29,281 +30,387 @@
 
 \maketitle
 
-\section*{1. 算法目标}
+\section*{1. 算法定位}
 
-给定由长对话构建的 CaseGraph 与当前记忆库 $M_t$，算法通过冻结的 Attacker 持续产生基于公开图谱证据的刁钻问题，再训练 Memory Refactoring Policy 执行 \texttt{Add} 或 \texttt{Merge}。优化目标不仅是使当前答案可被检索，而是在不破坏历史能力的前提下，构建一个\textbf{完整、有据、可检索且紧凑}的结构化记忆库。
+给定由长对话构建的 CaseGraph $G_c$ 和当前记忆库 $M_{c,t}$，算法首先通过覆盖感知路由选出一段公开图谱证据，再由可训练 Attacker 根据该路由生成问题。Defender 负责判断现有记忆能否支持该问题，并在必要时通过 \texttt{Add} 或 \texttt{Merge} 重构记忆。
+
+这里的 Attacker 不是以“让 Answerer 答错”为最终目标，而是一个\textbf{可训练的问题课程生成策略}。它应当发现当前记忆中值得学习、能够修复并能提升后续记忆质量的信息缺口。一个仅仅晦涩、含混或无法从路由证据回答的问题，即使能够让 Answerer 失败，也不应获得高奖励。
 
 \begin{implbox}
-\textbf{核心非对称性：}
-Attacker 保持冻结，只根据公开图谱证据生成问题；Defender 中只有 Memory Refactoring Policy 通过 GRPO 更新参数。Contriever、覆盖调度器和确定性 Reward Evaluator 均保持冻结；训练循环不调用外部 Answer Agent 或 LLM Judge API。
+\textbf{核心原则：非零和、价值驱动。}
+
+Attacker 与 Defender 不构成 $R_A=-R_D$ 的零和博弈。Defender 学习如何写出完整、可检索且不遗忘的记忆；Attacker 学习如何提出能够带来覆盖增益、有效重构或可靠认证的问题。Answerer 的失败只是“可能存在记忆缺口”的诊断信号，不是 Attacker 的独立奖励。
 \end{implbox}
 
-\section*{2. 核心数据结构与状态}
+\section*{2. 图谱、记忆状态与双策略}
 
-\subsection*{2.1 CaseGraph}
+\subsection*{2.1 CaseGraph 与覆盖单元}
 
-对于每个 case $c$，从原始 session 构建
+对每个 case $c$，记
 \[
     G_c=(V_c,E_c,\mathcal{S}_c),
 \]
-其中 $V_c$ 是实体集合，$E_c$ 是带描述、权重和来源 session id 的关系边，$\mathcal{S}_c$ 保留原始 session 内容。路由和 Attacker 不可读取 \texttt{target} 问答字段，也会过滤 evaluator 注入的节点与边。
+其中 $V_c$ 是实体集合，$E_c$ 是关系边集合，$\mathcal{S}_c$ 是带来源 id 的原始 session 集。训练和 Evaluation 的问题生成阶段只能使用公开图谱证据，不得读取 target question、target answer 或 evaluator 注入的节点和边。
 
-\subsection*{2.2 结构化记忆}
+每条公开关系边 $e$ 对应一个 coverage unit $u_e$。图中保存的边权重不是额外的评分函数，而是相同标准化 $(\text{source},\text{target})$ 关系在各 session 中抽取强度的累加：
+\[
+    w_{\mathrm{edge}}(e)
+    =\sum_{r:\,(\operatorname{src}(r),\operatorname{tgt}(r))=e}
+    \operatorname{strength}(r).
+\]
+覆盖计算使用平方根压缩后的权重
+\[
+    w(u_e)=
+    \max\!\left(1,\sqrt{\max(0,w_{\mathrm{edge}}(e))}\right).
+\]
 
-当前记忆库表示为 $M_t=\{m_i\}$，其中每个 chunk 为
+\subsection*{2.2 结构化记忆与环境状态}
+
+记忆库 $M_{c,t}=\{m_i\}$ 中的每个 chunk 为
 \begin{implbox}
-\texttt{MemoryChunk = \{ memory\_id, content, linked\_questions, metadata \}}
+\path{MemoryChunk = {memory_id, content, linked_questions, metadata}}
 
-\texttt{metadata} 可包含 \texttt{facts}、\texttt{summary}、\texttt{keywords}、\texttt{source\_ids} 和时间信息。
-\texttt{linked\_questions} 记录该 chunk 已支持的问题，是 Merge 后执行定向回归测试的血缘索引。
+\path{metadata} 保存结构化事实、摘要、关键词、来源 id 和时间信息；
+\path{linked_questions} 保存该 chunk 已支持的问题，用于 Merge 后的定向回归测试。
 \end{implbox}
 
-\subsection*{2.3 每个 case 的持久环境状态}
-
-在线训练为每个 case 独立维护
+每个 case 的持久环境状态写为
 \[
-    \mathcal{E}_{c,t}=(M_{c,t},P_{c,t},B_{c,t},C_{c,t}),
+    \mathcal{E}_{c,t}
+    =(M_{c,t},P_{c,t},B_{c,t},C_{c,t},H_{c,t}),
 \]
-其中 $P_{c,t}$ 是 Success Pool，$B_{c,t}$ 是 High-Priority Buffer，$C_{c,t}$ 是图谱覆盖率跟踪器。一个需要重构的 GRPO 状态为
+其中 $P_{c,t}$ 是 Success Pool，$B_{c,t}$ 是失败样本缓冲区，$C_{c,t}$ 是当前记忆对 CaseGraph 事实的覆盖状态，$H_{c,t}$ 是已生成问题及其价值统计，用于去重和课程调度。
+
+\subsection*{2.3 可训练 Attacker 与 Defender}
+
+路由器根据 $G_c$ 与 $C_{c,t}$ 选择路径
 \[
-    S_t=(M_t,Q_t,A_t,F_t,a_t,I_t,\mathcal{R}_t),
+    \rho_t=\operatorname{Route}(G_c,C_{c,t}).
 \]
-其中 $A_t$ 是标准答案，$F_t$ 是黄金原始证据，$a_t\in\{\texttt{add},\texttt{merge}\}$，$I_t$ 是 Merge 将替换的旧 chunk id，$\mathcal{R}_t$ 是回归问题集。
-
-\section*{3. 完整单次在线训练迭代}
-
-\subsection*{阶段一：覆盖感知的图谱路由与攻击生成}
-
-\begin{enumerate}
-    \item \textbf{case 调度}：数据集在尚未完成的 case 之间轮询，为每个 case 保留独立的 $M_{c,t}$。
-
-    \item \textbf{覆盖单元建模}：将每条公开关系边视为一个 coverage unit $u$，权重为
-    \[
-        w(u)=\max\left(1,\sqrt{w_{\mathrm{edge}}(u)}\right).
-    \]
-
-    \item \textbf{覆盖感知路由}：从 \texttt{USER} 节点优先开始多次随机游走，对候选路径 $\pi$ 计算
-    \[
-        s_{\mathrm{route}}(\pi)
-        =4W_{\mathrm{pending}}(\pi)
-        +0.5N_{\mathrm{failure}}(\pi)
-        +0.01s_{\mathrm{graph}}(\pi),
-    \]
-    优先选择覆盖未解决关系或历史失败关系的路径。以概率 $\epsilon_{\mathrm{explore}}$ 直接随机探索，避免调度器陷入局部区域。
-
-    \item \textbf{冻结 Attacker 生成攻击}：Attacker 只接收路径上的公开实体与关系，生成唯一指称、可回答的问题 $Q_t$ 与训练答案 $A_t$。系统根据路径边的 \texttt{source\_ids} 回溯原始 session，得到黄金证据 $F_t$，然后将 $(Q_t,A_t,F_t)$ 直接交给初始防御阶段。
-\end{enumerate}
-
-\subsection*{阶段二：初始防御与成功血缘绑定}
-
-\begin{enumerate}[resume]
-    \item \textbf{冻结 Contriever 检索}：当前正式算法使用 \texttt{dense\_structured} Retriever，加载本地 \path{/mnt/local2/wxy/models/contriever} checkpoint，从 $M_t$ 检索 Top-$K$ 记忆。
-    \begin{itemize}
-        \item Retriever 分别将 \texttt{facts}、\texttt{summary}、\texttt{keywords} 和 \texttt{content} 展平为检索点，计算嵌入相似度后映射回 chunk，并以最高检索点得分作为 chunk 得分。
-        \item 每个 field 作为独立检索点，事实字段权重为 $1.2$，摘要为 $1.0$，内容为 $0.95$，关键词为 $0.75$。
-        \item 正式配置使用 $K=8$、\texttt{top\_k\_points}$=32$、\texttt{require\_model=true}；Contriever 加载失败时直接终止训练。
-    \end{itemize}
-
-    \item \textbf{确定性防御判定}：对检索命中的 \texttt{content}、\texttt{facts}、\texttt{summary} 和 \texttt{keywords} 执行标准化答案匹配。若任一命中 chunk 包含 $A_t$，则当前题判为正确；该过程不调用 Answer Agent 或 LLM Judge。
-
-    \item \textbf{初始防御分流}：
-    \begin{itemize}
-        \item \textit{回答正确}：将 $Q_t$ 绑定到直接支持答案的命中 chunk，向 $P_t$ 写入 $(Q_t,A_t,\text{memory ids})$，并更新路径覆盖状态。该题不产生 GRPO 样本。
-        \item \textit{回答错误}：防御被击穿，构建记忆重构状态 $S_t$。
-    \end{itemize}
-\end{enumerate}
-
-\subsection*{阶段三：相似度路由与回归集构建}
-
-\begin{enumerate}[resume]
-    \item \textbf{Add/Merge 分流}：令检索结果为 $H_t=\{(m_i,s_i)\}_{i=1}^{K}$，最高分数为 $s_{\max}$。
-    \[
-        a_t=
-        \begin{cases}
-            \texttt{add}, & s_{\max}<\tau,\\
-            \texttt{merge}, & s_{\max}\ge \tau.
-        \end{cases}
-    \]
-    对于 Merge，选中集合为 $I_t=\{\mathrm{id}(m_i)\mid s_i\ge\tau\}$。该步只决定动作和候选旧记忆，不修改 $M_t$。当前正式配置使用 $\tau=0.55$。
-
-    \item \textbf{构建定向回归集}：
-    \begin{itemize}
-        \item \textbf{Add}：使用固定随机种子从 $P_t$ 中至多抽样 $r=12$ 道成功题，用于检查全局检索分布偏移。
-        \item \textbf{Merge}：取 $I_t$ 中所有旧 chunk 的 \texttt{linked\_questions} 并集，并从 $P_t$ 补全标准答案，构成必考集 $\mathcal{R}_t$。
-    \end{itemize}
-\end{enumerate}
-
-\subsection*{阶段四：Memory Refactoring Policy 采样}
-
-\begin{enumerate}[resume]
-    \item \textbf{构建 Policy 输入}：Policy 只接收动作 $a_t$、当前问题 $Q_t$、黄金证据 $F_t$ 和 Merge 命中的旧 chunks。\texttt{route\_evidence} 只作为 reward 端的完整性检查信息，不写入 Defender 的 user prompt。
-
-    \item \textbf{生成结构化编辑方案}：为同一个 $S_t$ 采样 $K_{\mathrm{rollout}}=8$ 个候选方案 $p_{t,1},\ldots,p_{t,8}$。Policy 必须输出 JSON chunks，每个 chunk 包含 \texttt{memory\_id}、\texttt{content}，并填充 \texttt{facts}、\texttt{keywords}、\texttt{summary} 和 \texttt{source\_ids} 等结构化检索字段。
-    \begin{itemize}
-        \item \textbf{Add}：仅允许保留 1 个新 chunk，内容只能源于 $F_t$。
-        \item \textbf{Merge}：删除 $I_t$ 指定的 $m$ 个旧 chunk，将它们与 $F_t$ 重构为不超过 $m$ 个新 chunk。
-    \end{itemize}
-    输出为非法 JSON 或不含 chunk 时，该 rollout 直接得到格式惩罚。
-\end{enumerate}
-
-\subsection*{阶段五：沙盒执行与血缘继承}
-
-\begin{enumerate}[resume]
-    \item \textbf{构造临时记忆}：对每个候选方案深拷贝 $M_t$，得到独立沙盒 $M_{t,j}^{\mathrm{temp}}$。
-    \begin{itemize}
-        \item Add 保留全部旧记忆并追加新 chunk，其血缘初始化为 $[Q_t]$。
-        \item Merge 先删除 $I_t$ 中的旧 chunk，再追加新 chunk。每个新 chunk 继承所有被替换旧 chunk 的问题并集，并追加 $Q_t$。
-    \end{itemize}
-
-    \item \textbf{沙盒检索测试}：重建 Retriever，分别在 $M_{t,j}^{\mathrm{temp}}$ 上测试当前问题 $Q_t$ 和所有回归问题 $\mathcal{R}_t$。原始主记忆 $M_t$ 在整个评分过程中保持不变。
-\end{enumerate}
-
-\subsection*{阶段六：完整性门控的 Reward}
-
-\begin{enumerate}[resume]
-    \item \textbf{当前题正确性与完整性}：记 $c_{t,j}\in\{0,1\}$ 为标准答案是否出现在 Contriever 检索证据中，$h_{t,j}\in\{0,1\}$ 为新记忆完整性。Reward Evaluator 使用状态中的结构化 \texttt{route\_evidence} 同时检查：
-    \begin{itemize}
-        \item 答案实体是否出现；
-        \item subject 与 object 覆盖率是否分别达到阈值；
-        \item relation 与 qualifier 是否被保留；
-        \item 是否退化为只写答案、缺少关系上下文的 answer-only memory。
-    \end{itemize}
-    结构化完整性分数为
-    \[
-        C_{\mathrm{struct}}
-        =0.25I_{\mathrm{answer}}
-        +0.20C_{\mathrm{subj}}
-        +0.20C_{\mathrm{obj}}
-        +0.20C_{\mathrm{rel}}
-        +0.15C_{\mathrm{qual}}.
-    \]
-    当前正式阈值为 $C_{\mathrm{subj}},C_{\mathrm{obj}}\ge0.8$，$C_{\mathrm{rel}},C_{\mathrm{qual}}\ge0.5$，且除答案外至少保留 5 个有效语义 token。
-
-    \item \textbf{计算基础 Reward}：对第 $j$ 个 rollout，实现中的基础得分可写为
-    \begin{align*}
-        R_{t,j}^{\mathrm{base}}
-        ={}&r_{\mathrm{current}}+r_{\mathrm{complete}}+w_gG
-        +w_r\operatorname{Acc}(\mathcal{R}_t)-w_fN_{\mathrm{fail}}\\
-        &-w_nN_{\mathrm{chunk}}-w_l\frac{T_{\mathrm{new}}}{100}
-        -w_dD-w_aI_{\mathrm{answer\mbox{-}only}}-w_xX,
-    \end{align*}
-    其中 $G$ 表示与可用证据的接地程度，$D$ 表示与未删除旧记忆的重复度，$X$ 表示长文本直接复制黄金语料的比例。若回归集为空，不加回归准确率奖励。
-
-    \item \textbf{完整性门控}：
-    \[
-        \widetilde{R}_{t,j}^{\mathrm{base}}=
-        \begin{cases}
-            \min(R_{t,j}^{\mathrm{base}},0), & c_{t,j}=0,\\
-            \min(R_{t,j}^{\mathrm{base}},0.5), & c_{t,j}=1,\ h_{t,j}=0,\\
-            R_{t,j}^{\mathrm{base}}, & c_{t,j}=1,\ h_{t,j}=1.
-        \end{cases}
-    \]
-    因此，仅保留答案字符串但缺少事实关系的 chunk 无法获得高分。
-
-    \item \textbf{覆盖收益}：当前题正确且通过结构化完整性判定时，对新覆盖的关系给予额外奖励：
-    \[
-        g_{\mathrm{cov}}
-        =\min\left(1,\frac{W_{\mathrm{pending}}}{W_{\mathrm{route}}}\right),
-        \qquad
-        R_{t,j}=\widetilde{R}_{t,j}^{\mathrm{base}}
-        +\lambda_{\mathrm{cov}}g_{\mathrm{cov}}
-        +\lambda_{\mathrm{critical}}g_{\mathrm{critical}}.
-    \]
-\end{enumerate}
-
-\begin{implbox}
-\textbf{当前正式配置的主要权重：}
-$r_{\mathrm{current}}\in\{+3,-3\}$，$r_{\mathrm{complete}}\in\{+2,-2\}$，
-$w_g=1$，$w_r=1.25$，$w_f=2$，$w_n=0.3$，$w_l=0.35$，
-$w_d=0.75$，$w_a=1.5$，$w_x=1.0$，
-$\lambda_{\mathrm{cov}}=1.5$，$\lambda_{\mathrm{critical}}=1.0$。
-\end{implbox}
-
-\subsection*{阶段七：GRPO 更新与环境结算}
-
-\begin{enumerate}[resume]
-    \item \textbf{组内优势估计}：对同一状态的 $K_{\mathrm{rollout}}$ 个得分计算组内归一化优势
-    \[
-        \widehat{A}_{t,j}
-        =\frac{R_{t,j}-\overline{R}_t}{\sigma(R_t)+\varepsilon},
-    \]
-    并由 verl 的 GRPO/PPO 目标更新 Defender Policy。当前配置使用 GRPO 优势估计，且不将 KL 项加入 reward。所有 rollout 都参与参数学习，但只有一个候选可以改变环境状态。
-
-    \item \textbf{最优 rollout 选择}：令
-    \[
-        j^*=\arg\max_j R_{t,j}.
-    \]
-    在 Policy 更新后，系统按 \texttt{uid} 将 rollout 重新分组，取 $p_{t,j^*}$ 作为候选环境动作。
-
-    \item \textbf{实时记忆重验证}：因为同一 batch 中的状态可能基于较旧的 $M_t$，提交前必须使用当前 live memory 重新计算 reward。若 Merge 所需的旧 id 已不存在，或 live reward 不再超过提交阈值，则禁止提交。
-
-    \item \textbf{提交或回滚}：当前正式环境的提交阈值为 $\delta=1.0$。
-    \begin{itemize}
-        \item \textbf{Commit}：若 $R_{t,j^*}>\delta$ 且 live revalidation 通过，则以 $M_{t,j^*}^{\mathrm{temp}}$ 替换 $M_t$，得到 $M_{t+1}$；同时更新 Success Pool、覆盖状态、记忆轨迹与 checkpoint。
-        \item \textbf{Rollback}：若最优 reward 不超过 $\delta$、输出无法解析，或 live revalidation 失败，则保持 $M_{t+1}=M_t$，并将 $(Q_t,A_t)$ 及失败元数据加入 $B_t$。
-    \end{itemize}
-\end{enumerate}
-
-\section*{4. Case 完成条件与训练终止}
-
-定义加权结构覆盖率
+Attacker Policy 以公开路由证据、覆盖标记和问题历史摘要为输入：
 \[
-    \operatorname{Cov}_{\mathrm{struct}}
-    =\frac{\sum_{u\in\mathcal{U}}w(u)I[u\ \text{已通过}]}
-    {\sum_{u\in\mathcal{U}}w(u)},
+    y_{t,i}=(Q_{t,i},A_{t,i})
+    \sim
+    \pi_A^{\theta}(\cdot\mid
+    \operatorname{Public}(\rho_t),C_{c,t},H_{c,t}),
+    \qquad i=1,\ldots,K_A.
 \]
-并定义关键单元覆盖率 $\operatorname{Cov}_{\mathrm{critical}}$。当两者分别达到阈值，且后续攻击在无需重构的情况下连续通过 $W$ 次认证时，该 case 标记为 completed。若在问题预算 $N_{\max}$ 内仍未达标，则标记为 incomplete。
+Attacker 不直接读取 target 元数据、Answerer 的隐藏状态或完整的当前记忆文本。系统根据路由边的 \path{source_ids} 回溯黄金证据 $F_{t,i}$，而不是让 Attacker 自行编造证据。
 
-\begin{implbox}
-当前正式配置为：
-$\operatorname{Cov}_{\mathrm{struct}}\ge0.98$，
-$\operatorname{Cov}_{\mathrm{critical}}=1.0$，
-$W=12$，
-$N_{\max}=200$。
-\end{implbox}
+对于需要重构的问题，Defender Policy 接收
+\[
+    S_{t,i}
+    =(M_{c,t},Q_{t,i},A_{t,i},F_{t,i},
+      a_{t,i},I_{t,i},\mathcal{R}_{t,i})
+\]
+并生成编辑方案
+\[
+    p_{t,i,j}\sim\pi_D^{\phi}(\cdot\mid S_{t,i}),
+    \qquad j=1,\ldots,K_D.
+\]
+其中 $a_{t,i}\in\{\texttt{add},\texttt{merge}\}$，$I_{t,i}$ 是 Merge 将替换的旧记忆 id，$\mathcal{R}_{t,i}$ 是回归问题集。
 
-\section*{5. 训练后评估}
+\section*{3. 什么是“更有价值的问题”}
 
-对 held-out CaseGraph 的原始 target question，加载对应 case 的最终记忆 checkpoint，使用与训练配置一致的冻结 Retriever 取 Top-$K$，再由 Answer Agent 回答并由 Judge 评定正确性。最终报告每个 case 的检索证据、回答、判定结果和总体准确率。训练阶段隐藏的 \texttt{target} 元数据只在此阶段使用。
+\subsection*{3.1 有效性硬门控}
 
-\section*{6. 实现模块映射}
+每个 Attacker 输出首先通过确定性验证。令 $g_{t,i}\in\{0,1\}$ 表示以下条件是否全部满足：
 
 \begin{itemize}
-    \item CaseGraph 构建：\path{case_graph/builder.py}、\path{case_graph/models.py}
-    \item 图谱路由与覆盖调度：\path{case_graph/routing.py}、\path{case_graph/coverage.py}
-    \item 冻结 Attacker 与黄金证据回溯：\path{case_graph/attacker.py}、\path{case_graph/evidence.py}
-    \item Contriever 检索、初始防御与重构状态：\path{case_graph/retriever.py}、\path{case_graph/defense.py}、\path{case_graph/pipeline.py}
-    \item Add/Merge、血缘、沙盒与结算：\path{case_graph/refactoring.py}
-    \item 完整性 Reward 与 verl 适配：\path{case_graph/memory_evaluator.py}、\path{case_graph/grpo_adapter.py}
-    \item 在线环境与训练器：\path{case_graph/online_memory_dataset.py}、\path{case_graph/online_memory_trainer.py}
-    \item held-out 目标问题评估：\path{case_graph/evaluation.py}、\path{case_graph/evaluation_cli.py}
-    \item 正式训练配置：\path{configs/online_grpo.yaml}
+    \item \textbf{有据可答}：$A_{t,i}$ 能由路由关系和 $F_{t,i}$ 推导；
+    \item \textbf{指称明确}：问题不存在多个同样合理的答案；
+    \item \textbf{忠于路由}：问题实际检查的是 $\rho_t$ 中的关系、时间或组合事实；
+    \item \textbf{无评估泄漏}：问题不依赖 target 元数据或 evaluator-only 证据；
+    \item \textbf{非退化}：不是答案复述、无意义改写、提示注入或纯语言陷阱。
 \end{itemize}
 
-\section*{7. 算法摘要}
+若 $g_{t,i}=0$，该候选不进入记忆 Commit，并得到固定无效惩罚。系统不会因为它成功难倒 Answerer 而补偿该惩罚。
+
+\subsection*{3.2 可修复的信息缺口}
+
+令 $b_{t,i}\in\{0,1\}$ 表示重构前的旧记忆是否已经能够\textbf{正确且完整}地支持问题，令
+\[
+    d_{t,i,j}\in\{0,1\}
+\]
+表示应用 Defender 方案 $p_{t,i,j}$ 后，当前题是否正确、完整、结构充分并通过回归测试。再令 $z_{t,i,j}$ 表示该方案是否满足提交阈值。
+
+问题的可修复缺口价值定义为
+\[
+    L_{t,i}^{\mathrm{repair}}
+    =(1-b_{t,i})
+    \max_j\bigl[z_{t,i,j}d_{t,i,j}\bigr].
+\]
+只有“旧记忆失败，但经过一次合法重构后能够稳定解决”的问题，才得到这部分正奖励。相反，定义不可修复惩罚
+\[
+    L_{t,i}^{\mathrm{dead}}
+    =(1-b_{t,i})
+    \left(1-\max_j[z_{t,i,j}d_{t,i,j}]\right).
+\]
+因此，单纯制造失败但不能促成有效记忆更新的问题会被惩罚。
+
+\subsection*{3.3 覆盖、认证与未来收益}
+
+对于候选问题 $Q_{t,i}$，进一步计算：
+
+\begin{itemize}
+    \item $\Delta\operatorname{Cov}_{t,i}$：成功处理该问题后新增的 required coverage；
+    \item $\Delta\operatorname{Cov}^{\mathrm{critical}}_{t,i}$：新增的 critical coverage；
+    \item $N_{t,i}$：与历史问题相比的语义新颖度；
+    \item $K_{t,i}$：需要多条路由证据、时间关系或跨 session 关系才能回答的组合价值；
+    \item $S_{t,i}$：旧记忆已正确且完整时，该问题对覆盖认证的贡献；
+    \item $\Delta\operatorname{Perf}_{t,i}$：更新前后在固定的路由邻域探针和历史回归集上的性能提升。
+\end{itemize}
+
+路由邻域探针由环境确定性构造，不能由当前 Attacker 自己评分，从而避免 Attacker 与 Defender 通过特殊措辞形成投机配合。
+
+\subsection*{3.4 Attacker Reward}
+
+有效问题的 Attacker Reward 定义为
+\begin{align*}
+    R^A_{t,i}
+    ={}&
+    \lambda_{\mathrm{repair}}L_{t,i}^{\mathrm{repair}}
+    -\lambda_{\mathrm{dead}}L_{t,i}^{\mathrm{dead}}
+    +\lambda_{\mathrm{cov}}\Delta\operatorname{Cov}_{t,i}\nonumber\\
+    &+\lambda_{\mathrm{critical}}
+      \Delta\operatorname{Cov}^{\mathrm{critical}}_{t,i}
+    +\lambda_{\mathrm{future}}\Delta\operatorname{Perf}_{t,i}
+    +\lambda_{\mathrm{novel}}N_{t,i}\nonumber\\
+    &+\lambda_{\mathrm{compose}}K_{t,i}
+    +\lambda_{\mathrm{cert}}S_{t,i}
+    -\lambda_{\mathrm{dup}}D_{t,i}
+    -\lambda_{\mathrm{amb}}U_{t,i}
+    -\lambda_{\mathrm{cost}}T_{t,i}.
+\end{align*}
+其中 $D_{t,i}$ 是与历史问题的重复度，$U_{t,i}$ 是歧义或弱接地程度，$T_{t,i}$ 是不必要的长度和推理成本。完整门控写为
+\[
+    \widetilde R^A_{t,i}
+    =
+    \begin{cases}
+        -r_{\mathrm{invalid}}, & g_{t,i}=0,\\
+        R^A_{t,i}, & g_{t,i}=1.
+    \end{cases}
+\]
 
 \begin{implbox}
-对每个 case 持续执行：
+\textbf{Reward 中刻意不存在}
+$\lambda\mathbf{1}[\text{Answerer 初始回答错误}]$。
+
+初始回答错误只有与成功 Commit、完整记忆和未来性能提升共同出现时才产生价值。一个无法回答、无法修复的问题不是“强攻击”，而是低质量训练样本。
+\end{implbox}
+
+\section*{4. Defender Reward}
+
+Defender 仍以完整、可检索、不遗忘和紧凑为目标。对于方案 $p_{t,i,j}$，其 Reward 为
+\begin{align*}
+    R^D_{t,i,j}
+    ={}&
+    r_{\mathrm{current}}
+    +r_{\mathrm{complete}}
+    +w_gG_{t,i,j}
+    +w_r\operatorname{Acc}(\mathcal{R}_{t,i})\nonumber\\
+    &-w_fN_{\mathrm{regfail}}
+    -w_nN_{\mathrm{chunk}}
+    -w_lT_{\mathrm{new}}
+    -w_dD_{\mathrm{memory}}
+    -w_aI_{\mathrm{answer\mbox{-}only}}
+    -w_xX_{\mathrm{rawcopy}}.
+\end{align*}
+
+若当前题错误，则 $R^D$ 至多为 $0$；若答案正确但 subject、relation、object 或 qualifier 不完整，则 $R^D$ 至多为 $0.5$。只有当前题正确、结构完整且回归测试稳定的方案，才能超过正式提交阈值。
+
+\section*{5. 完整单次联合训练迭代}
+
+\subsection*{阶段一：覆盖感知路由}
+
+\begin{enumerate}
+    \item \textbf{选择 case}：在尚未完成且未耗尽预算的 case 之间轮询，读取其独立状态 $\mathcal{E}_{c,t}$。
+
+    \item \textbf{选择路由}：从公开图谱中产生多条随机游走候选路径，并按
+    \[
+        s(\rho)
+        =6W_{\mathrm{critical}}(\rho)
+        +4W_{\mathrm{pending}}(\rho)
+        +0.5N_{\mathrm{failure}}(\rho)
+        +0.25P(\rho)
+        +0.01s_{\mathrm{graph}}(\rho)
+    \]
+    选择优先包含未覆盖 critical facts 的路径，同时保留少量随机探索。
+\end{enumerate}
+
+\subsection*{阶段二：Attacker 问题组采样}
+
+\begin{enumerate}[resume]
+    \item \textbf{构造 Attacker 输入}：只提供 $\operatorname{Public}(\rho_t)$、该路由覆盖单元的粗粒度状态以及历史问题摘要，不提供 target 信息和完整记忆内容。
+
+    \item \textbf{生成问题组}：从同一个路由条件下采样 $K_A$ 个候选 $(Q_{t,i},A_{t,i})$。候选应优先检查未覆盖事实、容易在压缩中丢失的限定条件、跨 session 关系和可验证的组合事实，而不是通过罕见措辞制造难度。
+
+    \item \textbf{验证与证据绑定}：执行有效性硬门控，并根据路由 \path{source_ids} 绑定黄金证据 $F_{t,i}$。无效候选只保留用于 Attacker 的负样本，不进入 Defender 环境。
+\end{enumerate}
+
+\subsection*{阶段三：共享起点下的反事实记忆评估}
+
+\begin{enumerate}[resume]
+    \item \textbf{冻结起始状态}：每个有效问题都从同一份 $M_{c,t}$ 深拷贝开始，Attacker 候选之间不得依次修改主记忆。
+
+    \item \textbf{初始防御}：使用冻结 Contriever 从 $M_{c,t}$ 检索 Top-$K$。只有答案正确且检索证据结构完整时，才令 $b_{t,i}=1$；这类问题仍可通过新增覆盖或认证价值获得 Attacker Reward。
+
+    \item \textbf{Add/Merge 分流}：若 $b_{t,i}=0$，令检索最高相似度为 $s_{\max}$：
+    \[
+        a_{t,i}=
+        \begin{cases}
+            \texttt{add}, & s_{\max}<\tau,\\
+            \texttt{merge}, & s_{\max}\ge\tau.
+        \end{cases}
+    \]
+    Add 从 Success Pool 抽取全局回归题；Merge 使用被替换 chunks 的全部 \path{linked_questions} 构造定向回归集。
+
+    \item \textbf{Defender 方案组采样}：针对同一 $S_{t,i}$ 采样 $K_D$ 个结构化编辑方案。在彼此隔离的沙盒中执行编辑、Contriever 检索、当前题测试、完整性检查和回归测试，得到 $R^D_{t,i,j}$。
+\end{enumerate}
+
+\subsection*{阶段四：双策略 GRPO 更新}
+
+\begin{enumerate}[resume]
+    \item \textbf{更新 Defender}：对于每个需要重构的状态，在其 $K_D$ 个方案内计算
+    \[
+        \widehat A^D_{t,i,j}
+        =
+        \frac{R^D_{t,i,j}-\overline R^D_{t,i}}
+        {\sigma(R^D_{t,i})+\varepsilon},
+    \]
+    并更新 $\pi_D^{\phi}$。Attacker 参数在该更新中停止梯度。
+
+    \item \textbf{计算问题价值}：使用初始防御、最佳合法 Defender 结果、覆盖增益、固定邻域探针和回归变化，计算每个候选的 $\widetilde R^A_{t,i}$。
+
+    \item \textbf{更新 Attacker}：在同一路由的 $K_A$ 个问题内计算
+    \[
+        \widehat A^A_{t,i}
+        =
+        \frac{\widetilde R^A_{t,i}-\overline R^A_t}
+        {\sigma(\widetilde R^A_t)+\varepsilon},
+    \]
+    并更新 $\pi_A^{\theta}$。Defender 与环境状态在该更新中停止梯度。
+
+    \item \textbf{交替冻结}：实际训练按小窗口交替进行 Defender 更新和 Attacker 更新。收集 Attacker Reward 时使用固定的 Defender 快照，避免两个策略同时快速漂移导致 Reward 不可比较。
+\end{enumerate}
+
+\subsection*{阶段五：唯一环境结算}
+
+\begin{enumerate}[resume]
+    \item \textbf{选择问题}：在有效候选中选择
+    \[
+        i^*=\arg\max_i\widetilde R^A_{t,i}.
+    \]
+    其他候选只参与 Attacker 学习，不改变主记忆。
+
+    \item \textbf{选择编辑}：若 $b_{t,i^*}=0$，选择
+    \[
+        j^*=\arg\max_j R^D_{t,i^*,j}.
+    \]
+    使用最新 live memory 重新验证该方案。只有 Reward 超过阈值、当前题正确完整且回归测试通过时才 Commit；否则 Rollback。
+
+    \item \textbf{更新持久状态}：
+    \begin{itemize}
+        \item 初始防御成功时，绑定问题血缘，更新 Success Pool 和覆盖状态；
+        \item Commit 时，以沙盒记忆替换 $M_{c,t}$，继承旧问题血缘，并记录新增覆盖；
+        \item Rollback 时保持 $M_{c,t}$ 不变，将问题及失败原因写入缓冲区；
+        \item 无论是否 Commit，都将问题价值、有效性和重复度写入 $H_{c,t}$。
+    \end{itemize}
+\end{enumerate}
+
+\section*{6. 防止 Attacker 退化}
+
+\begin{itemize}
+    \item \textbf{不奖励纯失败}：旧记忆失败但无法通过合法重构解决时，Attacker 得到 $L^{\mathrm{dead}}$ 惩罚。
+    \item \textbf{保留已会问题的价值}：若问题能够覆盖新的关键单元或提供认证，即使初始防御成功也可获得正奖励，避免 Attacker 只追逐失败样本。
+    \item \textbf{固定事实裁判}：答案接地、路由一致性和邻域性能由环境确定性检查，不由 Attacker 或 Defender 自评。
+    \item \textbf{多样性约束}：对语义重复、模板复读和同一答案的无效改写施加惩罚，并按 coverage unit 设置采样配额。
+    \item \textbf{语言稳定性}：对 Attacker 使用参考策略 KL 约束和最大长度惩罚，避免为了 Reward 产生不自然或过度复杂的问题。
+    \item \textbf{策略隔离}：Attacker 不读取 target 元数据和完整 live memory，Defender 不读取 Attacker Reward 分解，降低串谋和 Reward hacking 风险。
+\end{itemize}
+
+问题价值由以下四种结果明确区分：
+\begin{implbox}
+\begin{itemize}
+    \item \textbf{旧记忆成功且带来新覆盖/认证}：有价值，给予适度正奖励；
+    \item \textbf{旧记忆失败，重构后正确完整}：最有学习价值，给予较高正奖励；
+    \item \textbf{旧记忆失败，重构后仍失败或不能 Commit}：无有效学习收益，给予非正奖励；
+    \item \textbf{问题无依据、含混或泄漏 target}：直接拒绝并惩罚。
+\end{itemize}
+\end{implbox}
+
+\section*{7. Case 完成条件}
+
+定义全部公开边的结构覆盖率
+\[
+    \operatorname{Cov}_{\mathrm{struct}}
+    =
+    \frac{
+    \sum_{u\in\mathcal U}w(u)\mathbf{1}[u\ \text{已覆盖}]
+    }{
+    \sum_{u\in\mathcal U}w(u)
+    },
+\]
+以及只针对 memory-worthy critical units 的必需覆盖率
+\[
+    \operatorname{Cov}_{\mathrm{req}}
+    =
+    \frac{
+    \sum_{u\in\mathcal U_{\mathrm{critical}}}
+    w(u)\mathbf{1}[u\ \text{已覆盖}]
+    }{
+    \sum_{u\in\mathcal U_{\mathrm{critical}}}w(u)
+    }.
+\]
+
+当 $\operatorname{Cov}_{\mathrm{req}}\ge0.98$ 且
+$\operatorname{Cov}_{\mathrm{critical}}=1.0$ 后，路由器进入认证阶段。Attacker 继续生成清晰、等价但不重复的认证问题；只有连续 $W_{\mathrm{train}}$ 次无需重构即可正确完整回答时，case 才标记为 completed。任何新的 Commit 都会使先前认证失效并重新计数。
+
+\section*{8. Held-out Evaluation}
+
+Evaluation 阶段冻结训练完成的 Attacker、Defender、Contriever 和覆盖调度器，不再更新任何参数。对每个 held-out case：
+
+\begin{enumerate}
+    \item 删除 target question、target answer、answer source ids 和 evaluator-only 图谱元素；
+    \item 按 required coverage 选择公开路由；
+    \item 使用冻结 Attacker checkpoint，根据路由生成目标无关、可验证且高价值的问题；
+    \item 运行相同的初始完整性审计和 Defender \texttt{Add}/\texttt{Merge} 沙盒；
+    \item 只提交正确、完整且超过阈值的编辑，并执行连续覆盖认证；
+    \item 固化最终记忆，清除构建期问题血缘和提示元数据；
+    \item 仅对 certified memory 解封原始 target question，使用固定记忆回答，且不再编辑。
+\end{enumerate}
+
+Evaluation 中的 Attacker 只负责构建 target-free 记忆课程，不根据目标问题调整提问。checkpoint 输出异常时，单个提案最多尝试 3 次；若一个 case 连续 10 次没有产生任何有效沙盒结果，则以
+\path{stop_reason=proposal_failure_limit} 终止并标记为 incomplete。
+
+\section*{9. 算法摘要}
+
+\begin{implbox}
 \[
 \boxed{
 \begin{gathered}
-\text{覆盖感知路由}
+\text{Coverage-aware Route}
 \rightarrow
-\text{冻结攻击}
+\text{Trainable Valuable-Question Attacker}
 \rightarrow
-\text{旧记忆防御}
-\rightarrow
-\text{Add/Merge}\\
+\text{Validity Gate}\\
 \Downarrow\\
-\text{GRPO 多方案沙盒}
+\text{Initial Memory Audit}
 \rightarrow
-\text{完整性 Reward}
+\text{Defender Add/Merge Rollouts}
 \rightarrow
-\text{Commit/Rollback}
+\text{Sandbox and Regression}\\
+\Downarrow\\
+\text{Defender GRPO}
+\quad+\quad
+\text{Attacker Value GRPO}
+\rightarrow
+\text{Unique Commit/Rollback}
 \end{gathered}
 }
 \]
-这一闭环将“是否记住当前答案”提升为“是否以可检索、有血缘、不遗忘且完整的形式重构记忆”。
+
+Attacker 学习的不是“怎样让 Answerer 更容易失败”，而是“在给定路由后，怎样提出一个有证据、可修复、能增加覆盖并能提升未来记忆能力的问题”。Defender 则学习把这个问题暴露出的信息缺口转化为完整、紧凑、可检索且不遗忘的结构化记忆。
 \end{implbox}
 
 \end{document}

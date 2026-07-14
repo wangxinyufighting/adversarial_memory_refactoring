@@ -85,6 +85,7 @@ class OpenAIChatClient:
     base_url: str = "https://api.openai.com/v1"
     timeout: int = 120
     thinking: Optional[Dict[str, str]] = None
+    chat_template_kwargs: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_env(cls) -> "OpenAIChatClient":
@@ -152,6 +153,8 @@ class OpenAIChatClient:
             payload["response_format"] = {"type": "json_object"}
         if self.thinking is not None:
             payload["thinking"] = self.thinking
+        if self.chat_template_kwargs is not None:
+            payload["chat_template_kwargs"] = self.chat_template_kwargs
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         return payload

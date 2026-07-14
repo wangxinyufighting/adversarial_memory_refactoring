@@ -92,6 +92,7 @@ class MemoryConstructionConfig:
     case_workers: int = 1
     memory_save_interval: int = 0
     max_attack_failures: int = 20
+    max_consecutive_proposal_failures: int = 10
     progress_log_interval: int = 1
     retriever_config: Dict[str, Any] = field(default_factory=dict)
     reward_config: Dict[str, Any] = field(default_factory=dict)
@@ -216,10 +217,22 @@ class DefenderCheckpointPolicy:
                 )
                 chunks = _policy_chunks_from_response(response, state)
                 if not chunks:
-                    raise ValueError("response contains no non-empty chunks")
+                    preview = json.dumps(response, ensure_ascii=False, default=str)[:1000]
+                    raise ValueError(
+                        "response contains no non-empty chunks; "
+                        f"response_preview={preview}"
+                    )
                 break
             except Exception as exc:
                 errors.append(str(exc))
+                logger.warning(
+                    "Defender proposal attempt %d/%d failed: case=%s step=%s error=%s",
+                    attempt + 1,
+                    self.retries + 1,
+                    state.get("case_id", ""),
+                    state.get("step", ""),
+                    str(exc)[:1200],
+                )
                 if attempt >= self.retries:
                     raise ValueError(
                         "Defender proposal failed after "
@@ -500,6 +513,7 @@ class EvaluationMemoryConstructor:
         algorithm_config = self.config.algorithm_config(memory_archive_dir=memory_archive_dir)
         traces: List[ConstructionStepTrace] = []
         attack_failures = 0
+        consecutive_proposal_failures = 0
         completion_status = "incomplete"
         stop_reason = "question_budget_exhausted"
         question_budget = _resolve_question_budget(
@@ -713,6 +727,20 @@ class EvaluationMemoryConstructor:
                 except Exception as exc:
                     proposal_errors.append(f"rollout {rollout_index}: {exc}")
 
+            proposal_failed = not sandbox_results
+            if proposal_failed:
+                consecutive_proposal_failures += 1
+                logger.error(
+                    "Defender proposal failed: case=%s episode=%d/%d consecutive=%d error=%s",
+                    case_id,
+                    episode + 1,
+                    question_budget,
+                    consecutive_proposal_failures,
+                    " | ".join(proposal_errors)[:2000],
+                )
+            else:
+                consecutive_proposal_failures = 0
+
             settlement = settle_grpo_rollouts(
                 memory_store=memory_store,
                 sandbox_results=sandbox_results,
@@ -758,7 +786,7 @@ class EvaluationMemoryConstructor:
                     memory_store,
                     _source_ids_from_golden_facts(state.get("golden_facts", [])),
                 )
-            if should_log:
+            if should_log and settlement.selected_result is not None:
                 selected_reward = (
                     settlement.selected_result.reward.reward
                     if settlement.selected_result is not None
@@ -773,15 +801,16 @@ class EvaluationMemoryConstructor:
                     float(selected_reward),
                     len(memory_store.chunks),
                 )
+            trace_status = (
+                "proposal_failed"
+                if proposal_failed
+                else ("committed" if settlement.committed else "rolled_back")
+            )
             traces.append(
                 ConstructionStepTrace(
                     case_id=case_id,
                     episode=episode,
-                    status=(
-                        "committed"
-                        if settlement.committed
-                        else ("proposal_failed" if not sandbox_results else "rolled_back")
-                    ),
+                    status=trace_status,
                     question=state["question"],
                     answer=state["answer"],
                     route=attack_dict.get("route", {}),
@@ -793,6 +822,21 @@ class EvaluationMemoryConstructor:
                     coverage=coverage_tracker.snapshot(),
                 )
             )
+            proposal_failure_limit = max(
+                0,
+                int(self.config.max_consecutive_proposal_failures),
+            )
+            if (
+                proposal_failure_limit > 0
+                and consecutive_proposal_failures >= proposal_failure_limit
+            ):
+                stop_reason = "proposal_failure_limit"
+                logger.error(
+                    "Stopping case %s after %d consecutive defender proposal failures.",
+                    case_id,
+                    consecutive_proposal_failures,
+                )
+                break
             if _certification_done(coverage_tracker, self.config, certification_phase):
                 completion_status = "done"
                 stop_reason = "certified"
