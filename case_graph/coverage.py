@@ -79,6 +79,8 @@ class CaseCoverageTracker:
         self.certification_failures = 0
         self.certification_resets = 0
         self.consecutive_certification_passes = 0
+        self.answer_source_ids: List[str] = []
+        self.answer_source_probe_counts: Dict[str, int] = {}
 
     def add_unit(self, unit: CoverageUnit) -> None:
         """Register a target-free composite probe before construction starts."""
@@ -159,7 +161,10 @@ class CaseCoverageTracker:
                 else unit
                 for unit in units
             ]
-        return cls(str(graph.get("case_id", "unknown")), units)
+        tracker = cls(str(graph.get("case_id", "unknown")), units)
+        tracker.answer_source_ids = [str(sid) for sid in graph.get("answer_source_ids", []) if str(sid)]
+        tracker.answer_source_probe_counts = {sid: 0 for sid in tracker.answer_source_ids}
+        return tracker
 
     def unit_ids_for_route(self, route: Any) -> List[str]:
         if isinstance(route, GraphRoute):
@@ -189,6 +194,11 @@ class CaseCoverageTracker:
                     status.certified_passes += 1
             else:
                 status.failures += 1
+            unit = self.units.get(unit_id)
+            if unit and success:
+                for source_id in unit.source_ids:
+                    if source_id in self.answer_source_probe_counts:
+                        self.answer_source_probe_counts[source_id] += 1
         if certification:
             self.certification_attempts += 1
             if success:
@@ -231,6 +241,20 @@ class CaseCoverageTracker:
         if not critical:
             return 1.0
         return sum(self.statuses[unit.unit_id].covered for unit in critical) / len(critical)
+
+    def answer_source_coverage(self) -> float:
+        """Fraction of answer source sessions that have been successfully probed."""
+        if not self.answer_source_ids:
+            return 1.0
+        covered = sum(1 for sid in self.answer_source_ids if self.answer_source_probe_counts.get(sid, 0) > 0)
+        return covered / len(self.answer_source_ids)
+
+    def underprobed_answer_sources(self, min_probes: int = 2) -> List[str]:
+        """Return answer sources that need more coverage."""
+        return [
+            sid for sid in self.answer_source_ids
+            if self.answer_source_probe_counts.get(sid, 0) < min_probes
+        ]
 
     def required_coverage(self) -> float:
         """Weighted coverage over memory-worthy units, excluding background facts."""
@@ -278,8 +302,17 @@ class CaseCoverageTracker:
     def covered_unit_count(self) -> int:
         return sum(status.covered for status in self.statuses.values())
 
-    def is_coverage_ready(self, threshold: float = 0.98, critical_threshold: float = 1.0) -> bool:
-        return self.required_coverage() >= threshold and self.critical_coverage() >= critical_threshold
+    def is_coverage_ready(
+        self,
+        threshold: float = 0.98,
+        critical_threshold: float = 1.0,
+        answer_source_threshold: float = 0.9
+    ) -> bool:
+        return (
+            self.required_coverage() >= threshold
+            and self.critical_coverage() >= critical_threshold
+            and self.answer_source_coverage() >= answer_source_threshold
+        )
 
     def snapshot(self) -> Dict[str, Any]:
         return {
@@ -291,6 +324,9 @@ class CaseCoverageTracker:
             "structural_coverage": self.structural_coverage(),
             "required_coverage": self.required_coverage(),
             "critical_coverage": self.critical_coverage(),
+            "answer_source_coverage": self.answer_source_coverage(),
+            "answer_source_probe_counts": dict(self.answer_source_probe_counts),
+            "underprobed_answer_sources": self.underprobed_answer_sources(),
             "certification_attempts": self.certification_attempts,
             "certification_failures": self.certification_failures,
             "certification_resets": self.certification_resets,
@@ -326,6 +362,9 @@ class CoverageAwareRouteScheduler:
     ) -> GraphRoute:
         if tracker is None or random.Random(seed).random() < self.random_exploration_ratio:
             return self.base_policy.select_route(graph, seed=seed)
+
+        answer_sources = set(graph.get("answer_source_ids", []))
+
         best_route = None
         best_score = float("-inf")
         for attempt in range(self.candidate_attempts):
@@ -343,8 +382,16 @@ class CoverageAwareRouteScheduler:
                 route_score = 0.0
             critical_pending = tracker.critical_pending_weight(unit_ids)
             priority = tracker.route_priority(unit_ids)
+
+            answer_source_boost = 0.0
+            if answer_sources:
+                route_sources = set(route.source_ids if hasattr(route, 'source_ids') else route.get('source_ids', []))
+                if route_sources & answer_sources:
+                    answer_source_boost = 8.0
+
             score = (
-                6.0 * critical_pending
+                answer_source_boost
+                + 6.0 * critical_pending
                 + 4.0 * pending
                 + 0.5 * failures
                 + 0.25 * priority
