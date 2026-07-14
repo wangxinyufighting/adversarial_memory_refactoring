@@ -205,7 +205,28 @@ def main() -> None:
     }
     questions = merge_question_metadata(dataset_questions, graph_questions)
     memory_case_ids = discover_memory_case_ids(memory_dir)
-    if graph_questions:
+    memory_case_id_set = set(memory_case_ids)
+    graph_case_id_set = set(graph_questions)
+    graph_cases_without_memory: List[str] = []
+    memory_cases_without_graph: List[str] = []
+    if args.case_graph_baseline:
+        memory_cases_without_graph = sorted(memory_case_id_set - graph_case_id_set)
+        if memory_cases_without_graph:
+            raise SystemExit(
+                "CaseGraph baseline requires a matching graph for every memory case. "
+                "Missing graph case ids: "
+                + ", ".join(memory_cases_without_graph[:20])
+            )
+        graph_cases_without_memory = sorted(graph_case_id_set - memory_case_id_set)
+        selected_ids = sorted(memory_case_id_set)
+        if graph_cases_without_memory:
+            logger.info(
+                "CaseGraph baseline will ignore %d graph cases without constructed memory; "
+                "both methods will evaluate the same %d memory-backed cases.",
+                len(graph_cases_without_memory),
+                len(selected_ids),
+            )
+    elif graph_questions:
         selected_ids = sorted(graph_questions)
     else:
         selected_ids = sorted(memory_case_ids)
@@ -288,6 +309,17 @@ def main() -> None:
         "memory_dir": str(memory_dir),
         "coverage_dir": str(coverage_dir),
         "unmatched_memory_case_ids": unmatched_memory_ids,
+        "case_alignment": {
+            "selection_rule": (
+                "constructed_memory_cases_with_required_matching_graph"
+                if args.case_graph_baseline
+                else "graph_denominator" if graph_questions else "memory_files"
+            ),
+            "memory_case_count": len(memory_case_id_set),
+            "graph_case_count": len(graph_case_id_set),
+            "graph_cases_without_memory": graph_cases_without_memory,
+            "memory_cases_without_graph": memory_cases_without_graph,
+        },
         "config": {
             "answer_api_base": answer_client.base_url,
             "answer_model": answer_client.model,

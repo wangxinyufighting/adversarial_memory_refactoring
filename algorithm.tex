@@ -40,6 +40,10 @@
 \textbf{核心原则：非零和、价值驱动。}
 
 Attacker 与 Defender 不构成 $R_A=-R_D$ 的零和博弈。Defender 学习如何写出完整、可检索且不遗忘的记忆；Attacker 学习如何提出能够带来覆盖增益、有效重构或可靠认证的问题。Answerer 的失败只是“可能存在记忆缺口”的诊断信号，不是 Attacker 的独立奖励。
+
+Attacker 与 Defender 是\textbf{两个独立模型实例}，而不是同一个模型通过不同
+system prompt 扮演两个角色。二者可以从同一 base checkpoint 初始化，但此后拥有彼此
+独立的参数存储、优化器、参考策略、训练轨迹和 checkpoint。
 \end{implbox}
 
 \section*{2. 图谱、记忆状态与双策略}
@@ -81,7 +85,42 @@ Attacker 与 Defender 不构成 $R_A=-R_D$ 的零和博弈。Defender 学习如�
 \]
 其中 $P_{c,t}$ 是 Success Pool，$B_{c,t}$ 是失败样本缓冲区，$C_{c,t}$ 是当前记忆对 CaseGraph 事实的覆盖状态，$H_{c,t}$ 是已生成问题及其价值统计，用于去重和课程调度。
 
-\subsection*{2.3 可训练 Attacker 与 Defender}
+\subsection*{2.3 两个独立模型实例}
+
+令 $\pi_0^{\psi}$ 为共同的 base model。初始化时执行两次独立复制：
+\[
+    \theta_0\leftarrow\operatorname{Copy}(\psi),
+    \qquad
+    \phi_0\leftarrow\operatorname{Copy}(\psi).
+\]
+其中 $\theta$ 属于 Attacker，$\phi$ 属于 Defender。虽然初始数值满足
+$\theta_0=\phi_0$，但二者不是同一组参数：
+\[
+    \operatorname{Storage}(\theta)
+    \cap
+    \operatorname{Storage}(\phi)
+    =\varnothing.
+\]
+
+正式训练必须分别维护：
+\begin{implbox}
+\begin{itemize}
+    \item \textbf{Attacker Model}：
+    $\pi_A^{\theta}$、$\pi_{A,\mathrm{ref}}$、
+    $\operatorname{Optimizer}_A$ 和 \path{attacker_checkpoint}；
+    \item \textbf{Defender Model}：
+    $\pi_D^{\phi}$、$\pi_{D,\mathrm{ref}}$、
+    $\operatorname{Optimizer}_D$ 和 \path{defender_checkpoint}。
+\end{itemize}
+二者可以共享 tokenizer、词表和模型结构，也可以使用同一个只读 base checkpoint
+作为初始化来源，但不能共享可训练权重、optimizer state 或同一个 actor 实例。
+\end{implbox}
+
+Attacker 服务只生成问题与答案候选；Defender 服务只生成记忆编辑方案。训练过程中
+Attacker checkpoint 和 Defender checkpoint 分别保存、分别加载，不能用一个最新
+checkpoint 同时替代两个角色。
+
+\subsection*{2.4 双策略输入与输出}
 
 路由器根据 $G_c$ 与 $C_{c,t}$ 选择路径
 \[
@@ -446,7 +485,8 @@ $0.5$，且没有覆盖奖励，因此不能越过 $\delta=1.0$。
         \frac{R^D_{t,i,j}-\overline R^D_{t,i}}
         {\sigma(R^D_{t,i})+\varepsilon},
     \]
-    并更新 $\pi_D^{\phi}$。Attacker 参数在该更新中停止梯度。
+    并使用 $\operatorname{Optimizer}_D$ 更新 $\pi_D^{\phi}$。
+    $\theta$ 和 $\operatorname{Optimizer}_A$ 在该更新中完全冻结。
 
     \item \textbf{计算问题价值}：使用初始防御、最佳合法 Defender 结果、覆盖增益、固定邻域探针和回归变化，计算每个候选的 $\widetilde R^A_{t,i}$。
 
@@ -457,10 +497,29 @@ $0.5$，且没有覆盖奖励，因此不能越过 $\delta=1.0$。
         \frac{\widetilde R^A_{t,i}-\overline R^A_t}
         {\sigma(\widetilde R^A_t)+\varepsilon},
     \]
-    并更新 $\pi_A^{\theta}$。Defender 与环境状态在该更新中停止梯度。
+    并使用 $\operatorname{Optimizer}_A$ 更新 $\pi_A^{\theta}$。
+    $\phi$ 和 $\operatorname{Optimizer}_D$ 在该更新中完全冻结。
 
-    \item \textbf{交替冻结}：实际训练按小窗口交替进行 Defender 更新和 Attacker 更新。收集 Attacker Reward 时使用固定的 Defender 快照，避免两个策略同时快速漂移导致 Reward 不可比较。
+    \item \textbf{交替冻结}：实际训练按小窗口交替进行 Defender 更新和 Attacker 更新。收集 Attacker Reward 时使用固定的 Defender 模型快照；收集 Defender
+    trajectory 时使用固定的 Attacker 模型快照。冻结只表示另一模型不更新，不表示二者
+    共享参数。
 \end{enumerate}
+
+在第 $k$ 个联合训练窗口中，可以形式化写为
+\[
+    \theta_{k+1}
+    =
+    \operatorname{GRPO}_A
+    \bigl(\theta_k;\operatorname{stopgrad}(\phi_k)\bigr),
+\]
+\[
+    \phi_{k+1}
+    =
+    \operatorname{GRPO}_D
+    \bigl(\phi_k;\operatorname{stopgrad}(\theta_k)\bigr).
+\]
+这里的 \path{stopgrad} 表示另一模型只作为冻结的环境组件参与 Reward 计算，梯度绝不
+跨越 Attacker--Defender 边界传播。
 
 \subsection*{阶段五：唯一环境结算}
 
@@ -537,7 +596,9 @@ $\operatorname{Cov}_{\mathrm{critical}}=1.0$ 后，路由器进入认证阶段�
 
 \section*{8. Held-out Evaluation}
 
-Evaluation 阶段冻结训练完成的 Attacker、Defender、Contriever 和覆盖调度器，不再更新任何参数。对每个 held-out case：
+Evaluation 阶段分别加载训练完成的 \path{attacker_checkpoint} 与
+\path{defender_checkpoint}，冻结这两个独立模型以及 Contriever 和覆盖调度器，不再
+更新任何参数。对每个 held-out case：
 
 \begin{enumerate}
     \item 删除 target question、target answer、answer source ids 和 evaluator-only 图谱元素；
