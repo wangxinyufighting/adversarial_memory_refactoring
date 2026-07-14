@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import random
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Iterable, List, Optional
 
 from .models import EVALUATOR_METADATA_SOURCE
@@ -136,6 +136,29 @@ class CaseCoverageTracker:
                     critical_reason=critical_reason,
                 )
             )
+        critical_source_ids = {
+            source_id
+            for unit in units
+            if unit.critical
+            for source_id in unit.source_ids
+            if source_id
+        }
+        if critical_source_ids:
+            units = [
+                replace(
+                    unit,
+                    critical=True,
+                    priority=max(unit.priority, 3.0),
+                    critical_reason="critical_session_support",
+                )
+                if (
+                    not unit.critical
+                    and unit.critical_reason != "explicit_metadata"
+                    and critical_source_ids.intersection(unit.source_ids)
+                )
+                else unit
+                for unit in units
+            ]
         return cls(str(graph.get("case_id", "unknown")), units)
 
     def unit_ids_for_route(self, route: Any) -> List[str]:

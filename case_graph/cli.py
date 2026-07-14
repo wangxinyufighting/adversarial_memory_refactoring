@@ -40,6 +40,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Include assistant turns in session chunks. Default matches UnifiedMem and keeps user turns only.",
     )
+    parser.add_argument(
+        "--inject-missing-target-answer",
+        action="store_true",
+        help=(
+            "Legacy/debug option: add a marked graph unit when the gold answer was not "
+            "extracted. Disabled by default to keep graph artifacts target-free."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -80,6 +88,7 @@ def main() -> None:
                 question=entry.get("question", ""),
                 answer=entry.get("answer"),
                 source_ids=entry.get("answer_session_ids", []),
+                inject_missing=args.inject_missing_target_answer,
             )
         out_path = output_dir / f"{case_id}.case_graph.json"
         include_chunk_content = args.include_raw_chunks or not args.omit_raw_chunks

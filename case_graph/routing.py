@@ -1,9 +1,53 @@
+import copy
 import json
 import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
 from .models import EVALUATOR_METADATA_SOURCE
+
+
+TARGET_METADATA_KEYS = {
+    "target",
+    "answer",
+    "question",
+    "answer_source_ids",
+    "gold_answer",
+}
+
+
+def target_free_graph(graph: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a graph view with evaluator labels and injected answer units removed."""
+
+    safe_graph = copy.deepcopy(graph)
+    for key in TARGET_METADATA_KEYS:
+        safe_graph.pop(key, None)
+
+    entities = [
+        item for item in safe_graph.get("entities", []) if isinstance(item, dict)
+    ]
+    entity_map = {
+        str(item.get("name", "")): item for item in entities if item.get("name")
+    }
+    evaluator_entities = {
+        str(item.get("name", ""))
+        for item in entities
+        if _is_evaluator_injected_entity(item)
+    }
+    safe_graph["entities"] = [
+        item for item in entities if str(item.get("name", "")) not in evaluator_entities
+    ]
+    safe_graph["relationships"] = [
+        edge
+        for edge in safe_graph.get("relationships", [])
+        if (
+            isinstance(edge, dict)
+            and not _is_evaluator_injected_edge(edge, entity_map)
+            and str(edge.get("source", "")) not in evaluator_entities
+            and str(edge.get("target", "")) not in evaluator_entities
+        )
+    ]
+    return safe_graph
 
 
 @dataclass
@@ -83,14 +127,21 @@ class RerankClient(Protocol):
 
 
 def _entity_map(graph: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    return {entity["name"]: entity for entity in graph.get("entities", [])}
+    return {
+        str(entity.get("name", "")): entity
+        for entity in graph.get("entities", [])
+        if isinstance(entity, dict) and entity.get("name")
+    }
 
 
 def _is_evaluator_injected_entity(entity: Dict[str, Any]) -> bool:
     metadata = entity.get("metadata", {})
     description = entity.get("description", "")
     return (
-        metadata.get("source") == EVALUATOR_METADATA_SOURCE
+        (
+            isinstance(metadata, dict)
+            and metadata.get("source") == EVALUATOR_METADATA_SOURCE
+        )
         or "Memory fact recovered from evaluator metadata." in description
         or "Target answer for question:" in description
     )
@@ -98,11 +149,16 @@ def _is_evaluator_injected_entity(entity: Dict[str, Any]) -> bool:
 
 def _is_evaluator_injected_edge(edge: Dict[str, Any], entities: Dict[str, Dict[str, Any]]) -> bool:
     metadata = edge.get("metadata", {})
+    source = str(edge.get("source", ""))
+    target = str(edge.get("target", ""))
     return (
-        metadata.get("source") == EVALUATOR_METADATA_SOURCE
+        (
+            isinstance(metadata, dict)
+            and metadata.get("source") == EVALUATOR_METADATA_SOURCE
+        )
         or edge.get("description") == "target_answer"
-        or _is_evaluator_injected_entity(entities.get(edge["source"], {}))
-        or _is_evaluator_injected_entity(entities.get(edge["target"], {}))
+        or _is_evaluator_injected_entity(entities.get(source, {}))
+        or _is_evaluator_injected_entity(entities.get(target, {}))
     )
 
 

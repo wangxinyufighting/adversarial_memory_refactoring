@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -70,7 +71,17 @@ def _answer_texts(answer: Any) -> List[str]:
 
 
 def _contains_text(haystack: str, needle: str) -> bool:
-    return needle.casefold() in str(haystack or "").casefold()
+    needle_tokens = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]", str(needle or "").casefold())
+    haystack_tokens = re.findall(
+        r"[a-z0-9]+|[\u4e00-\u9fff]", str(haystack or "").casefold()
+    )
+    if not needle_tokens or len(needle_tokens) > len(haystack_tokens):
+        return False
+    width = len(needle_tokens)
+    return any(
+        haystack_tokens[index : index + width] == needle_tokens
+        for index in range(len(haystack_tokens) - width + 1)
+    )
 
 
 @dataclass(frozen=True)
@@ -262,8 +273,9 @@ class CaseGraph:
         question: str,
         answer: Any,
         source_ids: Iterable[str] = (),
+        inject_missing: bool = True,
     ) -> None:
-        """Record target QA metadata and add missing answer entities deterministically."""
+        """Record target labels and optionally add a legacy evaluator-only answer unit."""
         answer_texts = _answer_texts(answer)
         answer_source_ids = list(source_ids)
         self.target = {
@@ -271,6 +283,8 @@ class CaseGraph:
             "answer": answer,
             "answer_source_ids": answer_source_ids,
         }
+        if not inject_missing:
+            return
         for answer_text in answer_texts:
             if self.contains_answer(answer_text):
                 continue

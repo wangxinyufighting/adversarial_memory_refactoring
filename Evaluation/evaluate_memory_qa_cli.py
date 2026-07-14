@@ -19,6 +19,7 @@ from .memory_qa import (
     LongMemEvalAnswerJudge,
     LongMemEvalMemoryAnswerAgent,
     MemoryQuestion,
+    build_paper_metric_report,
     case_graph_to_memory_store,
     compare_memory_qa_results,
     discover_memory_case_ids,
@@ -77,6 +78,13 @@ def parse_args() -> argparse.Namespace:
         help="Do not answer cases whose coverage state is absent or not marked done.",
     )
     parser.add_argument("--output", help="Defaults to <memory-dir>/../memory_qa_results.json.")
+    parser.add_argument(
+        "--details-output",
+        help=(
+            "Full per-case diagnostics. Defaults to <output-stem>.details.json; --output "
+            "contains only the compact paper-metric report."
+        ),
+    )
     parser.add_argument("--case-id", action="append", default=[], help="Evaluate only this case id; repeatable.")
     parser.add_argument("--start-index", type=int, default=1, help="One-based index into selected cases.")
     parser.add_argument("--max-cases", type=int)
@@ -190,6 +198,11 @@ def main() -> None:
         Path(args.output)
         if args.output
         else memory_dir.parent / "memory_qa_results.json"
+    )
+    details_output_path = (
+        Path(args.details_output)
+        if args.details_output
+        else output_path.with_name(f"{output_path.stem}.details{output_path.suffix or '.json'}")
     )
     coverage_dir = (
         Path(args.coverage_dir)
@@ -352,8 +365,9 @@ def main() -> None:
             },
         },
     }
-    resume_allowed = args.resume and _resume_compatible(output_path, base_payload)
-    prior_results = _load_prior_results(output_path) if resume_allowed else []
+    resume_path = details_output_path if details_output_path.exists() else output_path
+    resume_allowed = args.resume and _resume_compatible(resume_path, base_payload)
+    prior_results = _load_prior_results(resume_path) if resume_allowed else []
     stale_prior_count = sum(
         "longmemeval_retrieval_metrics" not in item for item in prior_results
     )
@@ -370,7 +384,7 @@ def main() -> None:
         and "longmemeval_retrieval_metrics" in item
     }
     prior_baseline_results = (
-        _load_prior_baseline_results(output_path)
+        _load_prior_baseline_results(resume_path)
         if resume_allowed and args.case_graph_baseline
         else []
     )
@@ -557,6 +571,7 @@ def main() -> None:
         if completed_now % args.save_every == 0:
             _write_output(
                 output_path,
+                details_output_path,
                 base_payload,
                 selected_ids,
                 results_by_id,
@@ -565,19 +580,15 @@ def main() -> None:
 
     payload = _write_output(
         output_path,
+        details_output_path,
         base_payload,
         selected_ids,
         results_by_id,
         baseline_results_by_id if args.case_graph_baseline else None,
     )
-    print("Refactored memory:")
-    print(json.dumps(payload["summary"], ensure_ascii=False, indent=2))
-    if args.case_graph_baseline:
-        print("CaseGraph baseline:")
-        print(json.dumps(payload["baseline"]["summary"], ensure_ascii=False, indent=2))
-        print("Paired comparison:")
-        print(json.dumps(payload["comparison"], ensure_ascii=False, indent=2))
-    print(f"Detailed results: {output_path}")
+    print(json.dumps(payload["paper_metrics"], ensure_ascii=False, indent=2))
+    print(f"Paper metrics: {output_path}")
+    print(f"Detailed per-case results: {details_output_path}")
 
 
 def _build_judge_client(

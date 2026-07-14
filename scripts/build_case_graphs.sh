@@ -29,6 +29,7 @@ set -euo pipefail
 #   START_INDEX           One-based first case index. Defaults to 1.
 #   INCLUDE_ASSISTANT=1   Include assistant turns in chunks. Default keeps user turns only.
 #   OMIT_RAW_CHUNKS=1     Omit raw session text from graph JSON. Default keeps it for verification.
+#   INJECT_MISSING_TARGET_ANSWER=1  Legacy/debug only; inject a marked gold-answer graph unit.
 
 INPUT_PATH="${1:-data/longmemeval/longmemeval_s_cleaned.json}"
 OUTPUT_DIR="${2:-outputs/case_graphs}"
@@ -54,6 +55,10 @@ fi
 
 if [[ "${OMIT_RAW_CHUNKS:-0}" == "1" ]]; then
   ARGS+=(--omit-raw-chunks)
+fi
+
+if [[ "${INJECT_MISSING_TARGET_ANSWER:-0}" == "1" ]]; then
+  ARGS+=(--inject-missing-target-answer)
 fi
 
 "${PYTHON_BIN}" -m case_graph.cli "${ARGS[@]}"

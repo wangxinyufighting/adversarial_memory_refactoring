@@ -26,7 +26,7 @@ from .llm import OpenAIChatClient
 from .pipeline import AlgorithmConfig, prepare_refactor_state
 from .refactoring import HighPriorityBuffer, RefactorProposal, build_sandbox_memory
 from .retriever import MemoryChunk, MemoryStore, retriever_config_from_mapping
-from .routing import RandomWalkRoutingPolicy
+from .routing import RandomWalkRoutingPolicy, target_free_graph
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +167,14 @@ class OnlineMemoryEnvironment:
             logger.warning(f"Attack generation failed for case {case_id} episode {episode}: {e}")
             return None
 
+        certification_phase = bool(
+            case_state.coverage_tracker is not None
+            and case_state.coverage_tracker.is_coverage_ready(
+                self.config.coverage_threshold,
+                self.config.critical_coverage_threshold,
+            )
+        )
+
         # 2. Prepare refactor state (includes initial defense check)
         try:
             state = prepare_refactor_state(
@@ -190,14 +198,10 @@ class OnlineMemoryEnvironment:
         if state is None:
             # Initial defense succeeded, no refactor needed
             if case_state.coverage_tracker is not None:
-                certification = case_state.coverage_tracker.is_coverage_ready(
-                    self.config.coverage_threshold,
-                    self.config.critical_coverage_threshold,
-                )
                 case_state.coverage_tracker.record(
                     coverage_unit_ids,
                     success=True,
-                    certification=certification,
+                    certification=certification_phase,
                 )
                 case_state.ready = (
                     case_state.coverage_tracker.is_coverage_ready(
@@ -213,13 +217,16 @@ class OnlineMemoryEnvironment:
         state["uid"] = f"{case_id}_ep{episode}"
         state["episode"] = episode
         state["coverage_unit_ids"] = coverage_unit_ids
+        state["coverage_certification"] = certification_phase
         if case_state.coverage_tracker is not None:
             route_weight = case_state.coverage_tracker.route_weight(coverage_unit_ids)
             pending_weight = case_state.coverage_tracker.pending_weight(coverage_unit_ids)
             state["coverage_route_weight"] = route_weight
             state["coverage_pending_weight"] = pending_weight
-            state["coverage_critical_pending_weight"] = pending_weight
-            state["coverage_before"] = case_state.coverage_tracker.structural_coverage()
+            state["coverage_critical_pending_weight"] = (
+                case_state.coverage_tracker.critical_pending_weight(coverage_unit_ids)
+            )
+            state["coverage_before"] = case_state.coverage_tracker.required_coverage()
 
         return state
 
@@ -231,6 +238,7 @@ class OnlineMemoryEnvironment:
         current_answer: str = "",
         coverage_unit_ids: Optional[List[str]] = None,
         coverage_success: bool = True,
+        coverage_certification: bool = False,
     ) -> None:
         """Apply winning proposal to M_t after training step."""
         # Parse case_id from uid
@@ -257,8 +265,16 @@ class OnlineMemoryEnvironment:
                 memory_ids=[chunk.memory_id for chunk in best_proposal.new_chunks],
                 metadata={"committed_from_online_training": True},
             )
-        if case_state.coverage_tracker is not None and coverage_unit_ids:
-            case_state.coverage_tracker.record(coverage_unit_ids, success=coverage_success)
+        if case_state.coverage_tracker is not None:
+            tracker = case_state.coverage_tracker
+            if coverage_certification or tracker.consecutive_certification_passes > 0:
+                tracker.reset_certification()
+            if coverage_unit_ids:
+                tracker.record(
+                    coverage_unit_ids,
+                    success=coverage_success,
+                    certification=coverage_certification,
+                )
 
     def record_rollback(
         self,
@@ -381,7 +397,9 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
         graphs = []
         for file_path in graph_files:
             try:
-                graph = json.loads(Path(file_path).read_text(encoding="utf-8"))
+                graph = target_free_graph(
+                    json.loads(Path(file_path).read_text(encoding="utf-8"))
+                )
                 if self._validate_graph(graph):
                     graphs.append(graph)
                 else:
@@ -575,6 +593,7 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
                 commit_kwargs.update(
                     coverage_unit_ids=coverage_unit_ids,
                     coverage_success=True,
+                    coverage_certification=bool(state.get("coverage_certification", False)),
                 )
             self.env.commit_memory_update(uid, proposal, question, **commit_kwargs)
             logger.info(
@@ -609,6 +628,7 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
         case_state.coverage_tracker.record(
             [str(item) for item in state.get("coverage_unit_ids", [])],
             success=success,
+            certification=bool(state.get("coverage_certification", False)),
         )
 
     def _live_reward(self, solution: str, state: Dict[str, Any]) -> Optional[float]:
@@ -630,8 +650,10 @@ class OnlineMemoryDataset(torch.utils.data.Dataset):
             unit_ids = [str(item) for item in state.get("coverage_unit_ids", [])]
             live_state["coverage_route_weight"] = case_state.coverage_tracker.route_weight(unit_ids)
             live_state["coverage_pending_weight"] = case_state.coverage_tracker.pending_weight(unit_ids)
-            live_state["coverage_critical_pending_weight"] = live_state["coverage_pending_weight"]
-            live_state["coverage_before"] = case_state.coverage_tracker.structural_coverage()
+            live_state["coverage_critical_pending_weight"] = (
+                case_state.coverage_tracker.critical_pending_weight(unit_ids)
+            )
+            live_state["coverage_before"] = case_state.coverage_tracker.required_coverage()
         payload = compute_score(
             data_source="memory_refactor_online",
             solution_str=solution,

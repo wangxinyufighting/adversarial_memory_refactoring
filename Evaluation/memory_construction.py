@@ -43,7 +43,12 @@ from case_graph.refactoring import (
     settle_grpo_rollouts,
 )
 from case_graph.retriever import MemoryChunk, MemoryStore
-from case_graph.routing import GraphRoute, RandomWalkRoutingPolicy, public_route_evidence
+from case_graph.routing import (
+    GraphRoute,
+    RandomWalkRoutingPolicy,
+    public_route_evidence,
+    target_free_graph,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1044,10 +1049,7 @@ def construct_memories_for_graphs(
 
 def strip_target_metadata(graph: Dict[str, Any]) -> Dict[str, Any]:
     """Return the graph view allowed during memory construction."""
-    safe_graph = copy.deepcopy(graph)
-    for key in ("target", "answer", "question", "answer_source_ids", "gold_answer"):
-        safe_graph.pop(key, None)
-    return safe_graph
+    return target_free_graph(graph)
 
 
 def summarize_case_traces(
@@ -1474,7 +1476,18 @@ def _coverage_unit_supported(unit: CoverageUnit, evidence: str) -> bool:
     subject_score = _alias_phrase_coverage(unit.source, evidence)
     object_score = _alias_phrase_coverage(unit.target, evidence)
     relation_score = _alias_phrase_coverage(unit.relation, evidence)
-    return subject_score >= 0.8 and object_score >= 0.8 and relation_score >= 0.5
+    qualifier_scores = [
+        _alias_phrase_coverage(qualifier, evidence)
+        for qualifier in unit.qualifiers
+        if str(qualifier).strip()
+    ]
+    qualifier_complete = not qualifier_scores or min(qualifier_scores) >= 0.5
+    return bool(
+        subject_score >= 0.8
+        and object_score >= 0.8
+        and relation_score >= 0.5
+        and qualifier_complete
+    )
 
 
 def _candidate_priority(candidate: Dict[str, Any], tracker: CaseCoverageTracker) -> float:

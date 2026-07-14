@@ -774,6 +774,71 @@ def compare_memory_qa_results(
     }
 
 
+def build_paper_metric_report(
+    method_results: Sequence[Dict[str, Any]],
+    baseline_results: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Return the compact paper-facing metric table with explicit method names."""
+
+    method_summary = summarize_memory_qa(method_results)
+    report: Dict[str, Any] = {
+        "protocol": "UnifiedMem_LongMemEval",
+        "metric_order": ["R@5", "R@10", "N@5", "N@10", "Answer Accuracy"],
+        "OURS": _paper_metric_row(
+            method_summary,
+            method_name="Defender Refactored Memory",
+            memory_source="memory_states/<case_id>.json",
+            retrieval_unit="compressed_memory_value",
+        ),
+    }
+    if baseline_results is None:
+        return report
+
+    baseline_summary = summarize_memory_qa(baseline_results)
+    report["BASELINE"] = _paper_metric_row(
+        baseline_summary,
+        method_name="Original CaseGraph",
+        memory_source="case_graphs/<case_id>.case_graph.json",
+        retrieval_unit="case_graph_entity_or_relationship",
+    )
+    report["DELTA_OURS_MINUS_BASELINE"] = {
+        metric: _optional_delta(
+            report["OURS"].get(metric),
+            report["BASELINE"].get(metric),
+        )
+        for metric in report["metric_order"]
+    }
+    report["comparison_note"] = (
+        "Answer Accuracy is directly paired over the same cases. R@K and N@K use the "
+        "same formulas but different retrieval units for the two memory representations."
+    )
+    return report
+
+
+def _paper_metric_row(
+    summary: Dict[str, Any],
+    *,
+    method_name: str,
+    memory_source: str,
+    retrieval_unit: str,
+) -> Dict[str, Any]:
+    paper = summary.get("paper_metrics") or {}
+    status_counts = summary.get("status_counts") or {}
+    return {
+        "method_name": method_name,
+        "memory_source": memory_source,
+        "retrieval_unit": retrieval_unit,
+        "selected_cases": int(summary.get("total") or 0),
+        "retrieval_evaluated_cases": int(paper.get("retrieval_evaluated_cases") or 0),
+        "answer_error_cases": int(status_counts.get("answer_error") or 0),
+        "R@5": paper.get("R@5"),
+        "R@10": paper.get("R@10"),
+        "N@5": paper.get("N@5"),
+        "N@10": paper.get("N@10"),
+        "Answer Accuracy": paper.get("answer_accuracy"),
+    }
+
+
 def _answer_summary(
     results: Sequence[Dict[str, Any]],
     evaluated: Sequence[Dict[str, Any]],
