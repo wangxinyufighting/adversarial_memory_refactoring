@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import torch.utils.data
 
@@ -34,6 +34,17 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
         max_samples: int = -1,
         **kwargs
     ):
+        logger.info(f"OnlineAttackerDataset.__init__ called with data_files={data_files}, graph_files={graph_files}")
+
+        # Parse dataset config from data_files if provided (verl pattern)
+        if data_files and not graph_files:
+            logger.info(f"Loading dataset config from data_files: {data_files}")
+            dataset_config = self._load_dataset_config(data_files)
+            graph_files = dataset_config.get("graph_files", [])
+            defender_memory_dir = dataset_config.get("defender_memory_dir")
+            config = dataset_config.get("config", config or {})
+            logger.info(f"Extracted {len(graph_files) if graph_files else 0} graph_files from config")
+
         self.config = config or {}
         self.episodes_per_case = self.config.get("episodes_per_case", 100)
         self.routing_policy = self.config.get("routing_policy", "random_walk")
@@ -43,12 +54,50 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
         self.graphs = self._load_graphs(graph_files or [])
         logger.info(f"Loaded {len(self.graphs)} case graphs for attacker training")
 
+        if len(self.graphs) == 0:
+            logger.error(f"CRITICAL: No graphs loaded! graph_files={graph_files}")
+
         # Load defender memory states (frozen from previous round)
         self.memory_states = self._load_memory_states(defender_memory_dir)
         logger.info(f"Loaded {len(self.memory_states)} defender memory states")
 
         # Track episode counts
         self.case_episode_counts = {g["case_id"]: 0 for g in self.graphs}
+
+    def _load_dataset_config(self, data_files: Union[List[str], str]) -> Dict[str, Any]:
+        """Load dataset config from JSON file (verl pattern).
+
+        Args:
+            data_files: List of paths or single path string, typically containing one JSON config file
+
+        Returns:
+            Dictionary with graph_files, defender_memory_dir, and config
+        """
+        if not data_files:
+            logger.warning("_load_dataset_config called with empty data_files")
+            return {}
+
+        # Handle both string and list inputs
+        if isinstance(data_files, str):
+            config_path = Path(data_files)
+        elif isinstance(data_files, list):
+            config_path = Path(data_files[0])
+        else:
+            logger.error(f"Unexpected data_files type: {type(data_files)}")
+            return {}
+
+        logger.info(f"Attempting to load dataset config from: {config_path}")
+
+        if not config_path.exists():
+            logger.error(f"Dataset config file {config_path} not found")
+            return {}
+
+        with open(config_path) as f:
+            config_data = json.load(f)
+            logger.info(f"Loaded config with keys: {list(config_data.keys())}")
+            if "graph_files" in config_data:
+                logger.info(f"Config contains {len(config_data['graph_files'])} graph files")
+            return config_data
 
     def _load_graphs(self, graph_files: List[str]) -> List[Dict]:
         """Load case graph files."""
@@ -115,7 +164,24 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
         }
 
         # Format as verl row
-        return self._build_verl_row(state, idx)
+        row = self._build_verl_row(state, idx)
+
+        # verl expects raw_prompt to be set (normally done by RLHFDataset.__getitem__)
+        # raw_prompt should be the messages list from the "prompt" field
+        row["raw_prompt"] = row["prompt"]
+
+        # verl expects index at top level (extracted from extra_info by RLHFDataset)
+        row["index"] = row.get("extra_info", {}).get("index", idx)
+
+        # verl expects tools_kwargs and interaction_kwargs at top level
+        row["tools_kwargs"] = row.get("extra_info", {}).get("tools_kwargs", {})
+        row["interaction_kwargs"] = row.get("extra_info", {}).get("interaction_kwargs", {})
+
+        # verl requires dummy_tensor to ensure DataProto.batch is not empty
+        import torch
+        row["dummy_tensor"] = torch.tensor([0], dtype=torch.uint8)
+
+        return row
 
     def _generate_route(self, graph: Dict) -> Dict[str, Any]:
         """Generate attack route from graph."""
@@ -197,10 +263,10 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
         graph = state["graph"]
 
         # Extract entities from route nodes
-        entity_ids = route.get("nodes", [])
+        entity_names = route.get("nodes", [])
         entities = [
             e for e in graph.get("entities", [])
-            if e["entity_id"] in entity_ids
+            if e.get("name") in entity_names
         ]
 
         # Build prompt
@@ -208,9 +274,11 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
         prompt_parts.append("## Graph Route Evidence")
 
         for entity in entities:
-            prompt_parts.append(f"Entity: {entity['entity_name']}")
+            prompt_parts.append(f"Entity: {entity.get('name', 'Unknown')}")
             if entity.get("description"):
                 prompt_parts.append(f"  Description: {entity['description']}")
+            if entity.get("entity_type"):
+                prompt_parts.append(f"  Type: {entity['entity_type']}")
 
         # Add relationships from route
         route_relationships = route.get("relationships", [])

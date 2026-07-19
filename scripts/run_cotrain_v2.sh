@@ -4,13 +4,13 @@
 set -e
 
 # Default paths - override with environment variables
-GRAPHS_DIR=${GRAPHS_DIR:-"outputs/case_graphs_train"}
-VAL_GRAPHS_DIR=${VAL_GRAPHS_DIR:-"outputs/case_graphs_val"}
+GRAPHS_DIR=${GRAPHS_DIR:-"outputs/longmemeval_split/case_graphs_train"}
+VAL_GRAPHS_DIR=${VAL_GRAPHS_DIR:-"outputs/longmemeval_split/case_graphs_val"}
 ATTACKER_MODEL=${ATTACKER_MODEL:-"/mnt/local2/wxy/models/Qwen3-0.6B"}
 DEFENDER_MODEL=${DEFENDER_MODEL:-"/mnt/local2/wxy/models/Qwen3-0.6B"}
 OUTPUT_DIR=${OUTPUT_DIR:-"outputs/cotrain_v2"}
 CONFIG_FILE=${CONFIG_FILE:-"configs/cotrain_v2.yaml"}
-COTRAIN_ROUNDS=${COTRAIN_ROUNDS:-5}
+COTRAIN_ROUNDS=${COTRAIN_ROUNDS:-10}
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,5 +50,5 @@ echo "=========================================="
 echo "Co-Training Complete!"
 echo "=========================================="
 echo "Results saved to: $OUTPUT_DIR"
-echo "Final attacker: $OUTPUT_DIR/final_results.json"
-echo "Final defender: $OUTPUT_DIR/final_results.json"
+echo "Final attacker: $OUTPUT_DIR/final_attacker_results.json"
+echo "Final defender: $OUTPUT_DIR/final_defender_results.json"

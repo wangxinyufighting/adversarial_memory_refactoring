@@ -1,6 +1,6 @@
 # Co-Training V2 Configuration
 
-cotrain_rounds: 5
+cotrain_rounds: 10
 
 # Attacker Training Phase
 attacker:
@@ -44,7 +44,7 @@ attacker:
   # Rollout
   infer_backend: vllm
   rollout_tp: 1
-  rollout_gpu_memory_utilization: 0.6
+  rollout_gpu_memory_utilization: 0.3
   log_prob_micro_batch_size_per_gpu: 2
   max_prompt_length: 4096
   max_response_length: 512
@@ -146,7 +146,7 @@ defender:
   # Rollout
   infer_backend: vllm
   rollout_tp: 1
-  rollout_gpu_memory_utilization: 0.6
+  rollout_gpu_memory_utilization: 0.3
   max_prompt_length: 8192
   max_response_length: 4096
 

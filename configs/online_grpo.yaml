@@ -1,7 +1,7 @@
 # Online GRPO Training Configuration
 
 # Training
-num_epochs: 10
+num_epochs: 1
 train_batch_size: 32
 ppo_mini_batch_size: 16
 rollout_n: 8
@@ -85,7 +85,7 @@ rollout_dtype: bfloat16
 attn_implementation: flash_attention_2
 infer_backend: vllm
 rollout_tp: 1
-rollout_gpu_memory_utilization: 0.6
+rollout_gpu_memory_utilization: 0.8
 max_prompt_length: 8192
 max_response_length: 4096
 
