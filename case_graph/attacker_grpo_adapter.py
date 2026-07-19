@@ -9,13 +9,23 @@ import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-from .baseline import GoldenFactAnswerAgent, AnswerEquivalenceJudge
-from .llm import OpenAIChatClient
-from .llm import OpenAIChatClient
+ATTACKER_REWARD_KEYS = (
+    "score",
+    "format_valid",
+    "grounded",
+    "difficulty",
+    "constructive",
+)
 
 
-def compute_attacker_score(prompts, completions, **kwargs) -> List[float]:
-    """Main reward function called by verl during attacker GRPO training.
+def compute_attacker_score(
+    data_source: str,
+    solution_str: str,
+    ground_truth: str | Dict[str, Any],
+    extra_info: Optional[Dict[str, Any]] = None,
+    **kwargs: Any,
+) -> Dict[str, float]:
+    """Compute the reward for one attacker rollout using verl's callback contract.
 
     Multi-component reward:
     1. Format validity (question and answer present)
@@ -23,44 +33,35 @@ def compute_attacker_score(prompts, completions, **kwargs) -> List[float]:
     3. Difficulty bandpass (defender success rate in target range)
     4. Constructive impact (if defender commits, inherit reward)
     """
-    # Extract ground truth states
-    states = []
-    for prompt in prompts:
-        gt_str = prompt.get("reward_model", {}).get("ground_truth", "{}")
-        states.append(json.loads(gt_str))
-
-    # Extract attacker outputs
-    outputs = []
-    for completion in completions:
-        text = completion[0]["content"]
-        outputs.append(_parse_attacker_output(text))
-
-    # Compute rewards
-    rewards = []
-    for state, output in zip(states, outputs):
-        reward = _compute_single_reward(state, output, **kwargs)
-        rewards.append(reward)
-
-    return rewards
+    del data_source, extra_info
+    state = json.loads(ground_truth) if isinstance(ground_truth, str) else ground_truth
+    output = _parse_attacker_output(solution_str)
+    return _compute_single_reward(state, output, **kwargs)
 
 
-def _check_oracle_groundedness(question: str, answer: str, golden_facts: List[Dict]) -> bool:
-    """Check if answer is grounded in golden facts using oracle baseline."""
+def _check_oracle_groundedness(
+    question: str, answer: str, golden_facts: List[Dict]
+) -> bool:
+    """Check answer support locally without an LLM call in every reward worker."""
+    del question
     if not golden_facts:
         return False
 
-    try:
-        # Use baseline components to check groundedness
-        answer_agent = GoldenFactAnswerAgent(max_output_tokens=200)
-        judge = AnswerEquivalenceJudge(use_llm=False)  # String match only for speed
+    support_text = "\n".join(
+        str(fact.get("text") or fact.get("content") or fact)
+        if isinstance(fact, dict)
+        else str(fact)
+        for fact in golden_facts
+    )
+    normalized_answer = _normalize_text(answer)
+    return bool(
+        normalized_answer and normalized_answer in _normalize_text(support_text)
+    )
 
-        oracle_answer = answer_agent.answer(question, golden_facts)
-        judge_result = judge.judge(question, answer, oracle_answer["answer"])
 
-        return judge_result.get("correct", False)
-    except Exception:
-        # If oracle check fails, be lenient (don't penalize)
-        return True
+def _normalize_text(value: Any) -> str:
+    tokens = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", str(value or "").casefold())
+    return "".join(token for token in tokens if token not in {"a", "an", "the"})
 
 
 def _parse_attacker_output(text: str) -> Optional[Dict[str, str]]:
@@ -106,27 +107,25 @@ def _parse_attacker_output(text: str) -> Optional[Dict[str, str]]:
 def _compute_single_reward(
     state: Dict[str, Any],
     output: Optional[Dict[str, str]],
-    **kwargs
-) -> float:
+    **kwargs: Any,
+) -> Dict[str, float]:
     """Compute reward for single attacker output."""
     # Component 1: Format validity
     if output is None or not output.get("question") or not output.get("answer"):
-        return -5.0  # Hard penalty for invalid format
+        return _reward_payload({"score": -5.0, "format_valid": 0.0})
 
     question = output["question"]
     answer = output["answer"]
 
     # Basic quality checks
     if len(question) < 10 or len(answer) < 2:
-        return -3.0  # Too trivial
+        return _reward_payload({"score": -3.0, "format_valid": 1.0})
 
     # Component 2: Groundedness (oracle check)
     golden_facts = state.get("golden_facts", [])
-    is_grounded = True
-    if golden_facts:
-        is_grounded = _check_oracle_groundedness(question, answer, golden_facts)
-        if not is_grounded:
-            return -3.0  # Not answerable from golden facts
+    is_grounded = _check_oracle_groundedness(question, answer, golden_facts)
+    if not is_grounded:
+        return _reward_payload({"score": -3.0, "format_valid": 1.0, "grounded": 0.0})
 
     # Component 3: Difficulty (if defender provided)
     # This will be enhanced in full implementation to measure defender success rate
@@ -139,24 +138,34 @@ def _compute_single_reward(
     R_constructive = 2.0
 
     # Aggregate reward
-    w_format = 1.0
-    w_difficulty = 2.0
-    w_constructive = 3.0
+    reward_weights = kwargs.get("reward_weights") or {}
+    w_format = float(reward_weights.get("format", 1.0))
+    w_difficulty = float(reward_weights.get("difficulty", 2.0))
+    w_constructive = float(reward_weights.get("constructive", 3.0))
 
     total_reward = (
-        w_format * 1.0 +  # Passed format check
-        w_difficulty * R_difficulty +
-        w_constructive * R_constructive
+        w_format * 1.0  # Passed format check
+        + w_difficulty * R_difficulty
+        + w_constructive * R_constructive
     )
 
-    return total_reward
+    return _reward_payload(
+        {
+            "score": total_reward,
+            "format_valid": 1.0,
+            "grounded": 1.0,
+            "difficulty": R_difficulty,
+            "constructive": R_constructive,
+        }
+    )
+
+
+def _reward_payload(values: Dict[str, float]) -> Dict[str, float]:
+    return {key: float(values.get(key, 0.0)) for key in ATTACKER_REWARD_KEYS}
 
 
 def difficulty_bandpass(
-    p_success: float,
-    p_low: float = 0.25,
-    p_high: float = 0.75,
-    sigma: float = 0.12
+    p_success: float, p_low: float = 0.25, p_high: float = 0.75, sigma: float = 0.12
 ) -> float:
     """Difficulty bandpass reward (Dr. Zero style).
 
@@ -178,8 +187,7 @@ def difficulty_bandpass(
 
 
 def group_questions_by_structure(
-    states: List[Dict],
-    outputs: List[Optional[Dict]]
+    states: List[Dict], outputs: List[Optional[Dict]]
 ) -> Dict[str, List[int]]:
     """Group questions by graph structure for HRPO variance reduction.
 

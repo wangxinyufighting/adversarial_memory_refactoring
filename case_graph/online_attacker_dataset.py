@@ -3,12 +3,16 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch.utils.data
 
-from .routing import RandomWalkRoutingPolicy, HeuristicRoutingPolicy, GraphRoute, public_route_evidence
-from .models import CaseGraph
+from .evidence import route_golden_facts
+from .routing import (
+    HeuristicRoutingPolicy,
+    RandomWalkRoutingPolicy,
+    public_route_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +36,11 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
         tokenizer: Optional[Any] = None,
         processor: Optional[Any] = None,
         max_samples: int = -1,
-        **kwargs
+        **kwargs,
     ):
-        logger.info(f"OnlineAttackerDataset.__init__ called with data_files={data_files}, graph_files={graph_files}")
+        logger.info(
+            f"OnlineAttackerDataset.__init__ called with data_files={data_files}, graph_files={graph_files}"
+        )
 
         # Parse dataset config from data_files if provided (verl pattern)
         if data_files and not graph_files:
@@ -43,7 +49,9 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
             graph_files = dataset_config.get("graph_files", [])
             defender_memory_dir = dataset_config.get("defender_memory_dir")
             config = dataset_config.get("config", config or {})
-            logger.info(f"Extracted {len(graph_files) if graph_files else 0} graph_files from config")
+            logger.info(
+                f"Extracted {len(graph_files) if graph_files else 0} graph files from config"
+            )
 
         self.config = config or {}
         self.episodes_per_case = self.config.get("episodes_per_case", 100)
@@ -96,7 +104,9 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
             config_data = json.load(f)
             logger.info(f"Loaded config with keys: {list(config_data.keys())}")
             if "graph_files" in config_data:
-                logger.info(f"Config contains {len(config_data['graph_files'])} graph files")
+                logger.info(
+                    f"Config contains {len(config_data['graph_files'])} graph files"
+                )
             return config_data
 
     def _load_graphs(self, graph_files: List[str]) -> List[Dict]:
@@ -123,7 +133,9 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
         memory_path = Path(memory_dir)
 
         if not memory_path.exists():
-            logger.warning(f"Memory directory {memory_dir} not found, using empty states")
+            logger.warning(
+                f"Memory directory {memory_dir} not found, using empty states"
+            )
             return {g["case_id"]: {"chunks": []} for g in self.graphs}
 
         for memory_file in memory_path.glob("*.json"):
@@ -151,7 +163,7 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
         memory_state = self.memory_states.get(case_id, {"chunks": []})
 
         # Generate route for question generation
-        route = self._generate_route(graph)
+        route, golden_facts = self._generate_route(graph)
 
         # Build state for attacker
         state = {
@@ -160,7 +172,7 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
             "graph": graph,
             "memory_state": memory_state,
             "route": route,
-            "golden_facts": self._extract_golden_facts(graph, route),
+            "golden_facts": golden_facts,
         }
 
         # Format as verl row
@@ -175,16 +187,21 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
 
         # verl expects tools_kwargs and interaction_kwargs at top level
         row["tools_kwargs"] = row.get("extra_info", {}).get("tools_kwargs", {})
-        row["interaction_kwargs"] = row.get("extra_info", {}).get("interaction_kwargs", {})
+        row["interaction_kwargs"] = row.get("extra_info", {}).get(
+            "interaction_kwargs", {}
+        )
 
         # verl requires dummy_tensor to ensure DataProto.batch is not empty
         import torch
+
         row["dummy_tensor"] = torch.tensor([0], dtype=torch.uint8)
 
         return row
 
-    def _generate_route(self, graph: Dict) -> Dict[str, Any]:
-        """Generate attack route from graph."""
+    def _generate_route(
+        self, graph: Dict
+    ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        """Generate public route evidence plus evaluator-only golden facts."""
         if self.routing_policy == "random_walk":
             # Use random walk routing policy
             policy = RandomWalkRoutingPolicy(
@@ -194,35 +211,16 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
                 attempts=self.routing_attempts,
             )
             route = policy.select_route(graph)
-            # Extract evidence and convert to dict
             evidence = public_route_evidence(graph, route)
-            return {
-                "nodes": route.nodes,
-                "relationships": route.relationships,
-                "source_ids": evidence.get("source_ids", []),
-            }
+            return evidence, route_golden_facts(graph, route)
         elif self.routing_policy == "heuristic":
             policy = HeuristicRoutingPolicy()
             route = policy.select_route(graph)
             evidence = public_route_evidence(graph, route)
-            return {
-                "nodes": route.nodes,
-                "relationships": route.relationships,
-                "source_ids": evidence.get("source_ids", []),
-            }
+            return evidence, route_golden_facts(graph, route)
 
         # Fallback: empty route
-        return {"nodes": [], "relationships": [], "source_ids": []}
-
-    def _extract_golden_facts(self, graph: Dict, route: Dict) -> List[Dict]:
-        """Extract golden facts from route source IDs."""
-        source_ids = set(route.get("source_ids", []))
-        chunks = graph.get("chunks", [])
-
-        return [
-            chunk for chunk in chunks
-            if chunk.get("chunk_id") in source_ids
-        ]
+        return {"nodes": [], "relationships": []}, []
 
     def _build_verl_row(self, state: Dict, index: int) -> Dict[str, Any]:
         """Build verl-compatible training row."""
@@ -242,13 +240,16 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
                 {"role": "user", "content": user_prompt},
             ],
             "reward_model": {
-                "ground_truth": json.dumps({
-                    "case_id": state["case_id"],
-                    "episode": state["episode"],
-                    "route": state["route"],
-                    "golden_facts": state["golden_facts"],
-                    "memory_state": state["memory_state"],
-                }, ensure_ascii=False)
+                "ground_truth": json.dumps(
+                    {
+                        "case_id": state["case_id"],
+                        "episode": state["episode"],
+                        "route": state["route"],
+                        "golden_facts": state["golden_facts"],
+                        "memory_state": state["memory_state"],
+                    },
+                    ensure_ascii=False,
+                )
             },
             "extra_info": {
                 "index": index,
@@ -265,8 +266,7 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
         # Extract entities from route nodes
         entity_names = route.get("nodes", [])
         entities = [
-            e for e in graph.get("entities", [])
-            if e.get("name") in entity_names
+            e for e in graph.get("entities", []) if e.get("name") in entity_names
         ]
 
         # Build prompt
@@ -287,11 +287,13 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
             for rel in route_relationships:
                 source = rel.get("source", "")
                 target = rel.get("target", "")
-                rel_type = rel.get("type", "")
+                rel_type = rel.get("description") or rel.get("type", "")
                 prompt_parts.append(f"  {source} --[{rel_type}]--> {target}")
 
         prompt_parts.append("\n## Task")
-        prompt_parts.append("Generate a challenging question and answer based on this evidence.")
-        prompt_parts.append("Return JSON format: {\"question\": \"...\", \"answer\": \"...\"}")
+        prompt_parts.append(
+            "Generate a challenging question and answer based on this evidence."
+        )
+        prompt_parts.append('Return JSON format: {"question": "...", "answer": "..."}')
 
         return "\n".join(prompt_parts)
