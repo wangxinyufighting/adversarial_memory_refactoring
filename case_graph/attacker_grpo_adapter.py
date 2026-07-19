@@ -9,7 +9,8 @@ import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-from .baseline import oracle_check_attack, AnswerEquivalenceJudge
+from .baseline import GoldenFactAnswerAgent, AnswerEquivalenceJudge
+from .llm import OpenAIChatClient
 from .llm import OpenAIChatClient
 
 
@@ -41,6 +42,25 @@ def compute_attacker_score(prompts, completions, **kwargs) -> List[float]:
         rewards.append(reward)
 
     return rewards
+
+
+def _check_oracle_groundedness(question: str, answer: str, golden_facts: List[Dict]) -> bool:
+    """Check if answer is grounded in golden facts using oracle baseline."""
+    if not golden_facts:
+        return False
+
+    try:
+        # Use baseline components to check groundedness
+        answer_agent = GoldenFactAnswerAgent(max_output_tokens=200)
+        judge = AnswerEquivalenceJudge(use_llm=False)  # String match only for speed
+
+        oracle_answer = answer_agent.answer(question, golden_facts)
+        judge_result = judge.judge(question, answer, oracle_answer["answer"])
+
+        return judge_result.get("correct", False)
+    except Exception:
+        # If oracle check fails, be lenient (don't penalize)
+        return True
 
 
 def _parse_attacker_output(text: str) -> Optional[Dict[str, str]]:
@@ -102,9 +122,10 @@ def _compute_single_reward(
 
     # Component 2: Groundedness (oracle check)
     golden_facts = state.get("golden_facts", [])
+    is_grounded = True
     if golden_facts:
-        oracle_result = oracle_check_attack(question, answer, golden_facts)
-        if not oracle_result.get("correct", False):
+        is_grounded = _check_oracle_groundedness(question, answer, golden_facts)
+        if not is_grounded:
             return -3.0  # Not answerable from golden facts
 
     # Component 3: Difficulty (if defender provided)

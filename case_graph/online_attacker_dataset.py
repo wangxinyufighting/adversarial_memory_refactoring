@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .routing import random_walk_route
+from .routing import RandomWalkRoutingPolicy, HeuristicRoutingPolicy, GraphRoute, public_route_evidence
 from .models import CaseGraph
 
 logger = logging.getLogger(__name__)
@@ -112,27 +112,33 @@ class OnlineAttackerDataset:
     def _generate_route(self, graph: Dict) -> Dict[str, Any]:
         """Generate attack route from graph."""
         if self.routing_policy == "random_walk":
-            # Use random walk routing
-            for attempt in range(self.routing_attempts):
-                route = random_walk_route(
-                    graph,
-                    min_nodes=self.config.get("routing_min_nodes", 1),
-                    max_steps=self.config.get("routing_max_steps", 4),
-                    seed_offset=attempt,
-                )
-                if route and len(route.entity_ids) >= 1:
-                    return route.to_dict()
+            # Use random walk routing policy
+            policy = RandomWalkRoutingPolicy(
+                seed=0,
+                max_steps=self.config.get("routing_max_steps", 4),
+                min_nodes=self.config.get("routing_min_nodes", 1),
+                attempts=self.routing_attempts,
+            )
+            route = policy.select_route(graph)
+            # Extract evidence and convert to dict
+            evidence = public_route_evidence(graph, route)
+            return {
+                "nodes": route.nodes,
+                "relationships": route.relationships,
+                "source_ids": evidence.get("source_ids", []),
+            }
+        elif self.routing_policy == "heuristic":
+            policy = HeuristicRoutingPolicy()
+            route = policy.select_route(graph)
+            evidence = public_route_evidence(graph, route)
+            return {
+                "nodes": route.nodes,
+                "relationships": route.relationships,
+                "source_ids": evidence.get("source_ids", []),
+            }
 
-            # Fallback: simple route with first entity
-            entities = graph.get("entities", [])
-            if entities:
-                return {
-                    "entity_ids": [entities[0]["entity_id"]],
-                    "path": [entities[0]["entity_id"]],
-                    "source_ids": entities[0].get("source_ids", []),
-                }
-
-        return {"entity_ids": [], "path": [], "source_ids": []}
+        # Fallback: empty route
+        return {"nodes": [], "relationships": [], "source_ids": []}
 
     def _extract_golden_facts(self, graph: Dict, route: Dict) -> List[Dict]:
         """Extract golden facts from route source IDs."""
@@ -182,8 +188,8 @@ class OnlineAttackerDataset:
         route = state["route"]
         graph = state["graph"]
 
-        # Extract entities and relationships from route
-        entity_ids = route.get("entity_ids", [])
+        # Extract entities from route nodes
+        entity_ids = route.get("nodes", [])
         entities = [
             e for e in graph.get("entities", [])
             if e["entity_id"] in entity_ids
@@ -198,25 +204,18 @@ class OnlineAttackerDataset:
             if entity.get("description"):
                 prompt_parts.append(f"  Description: {entity['description']}")
 
-        # Add relationships if available
-        relationships = graph.get("relationships", [])
-        route_relationships = [
-            r for r in relationships
-            if r["source_id"] in entity_ids or r["target_id"] in entity_ids
-        ]
-
+        # Add relationships from route
+        route_relationships = route.get("relationships", [])
         if route_relationships:
             prompt_parts.append("\n## Relationships")
-            for rel in route_relationships[:5]:  # Limit to top 5
-                prompt_parts.append(
-                    f"{rel['source_name']} --[{rel['relationship_type']}]--> {rel['target_name']}"
-                )
+            for rel in route_relationships:
+                source = rel.get("source", "")
+                target = rel.get("target", "")
+                rel_type = rel.get("type", "")
+                prompt_parts.append(f"  {source} --[{rel_type}]--> {target}")
 
         prompt_parts.append("\n## Task")
-        prompt_parts.append(
-            "Generate one challenging question that tests memory of this evidence. "
-            "The question should be specific and grounded in the evidence above. "
-            "Return JSON: {\"question\": \"...\", \"answer\": \"...\"}"
-        )
+        prompt_parts.append("Generate a challenging question and answer based on this evidence.")
+        prompt_parts.append("Return JSON format: {\"question\": \"...\", \"answer\": \"...\"}")
 
         return "\n".join(prompt_parts)
