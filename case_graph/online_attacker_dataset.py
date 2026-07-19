@@ -5,13 +5,15 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import torch.utils.data
+
 from .routing import RandomWalkRoutingPolicy, HeuristicRoutingPolicy, GraphRoute, public_route_evidence
 from .models import CaseGraph
 
 logger = logging.getLogger(__name__)
 
 
-class OnlineAttackerDataset:
+class OnlineAttackerDataset(torch.utils.data.Dataset):
     """Dataset that generates attacker training states from case graphs.
 
     Each state consists of:
