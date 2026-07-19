@@ -2,29 +2,52 @@
 
 cotrain_rounds: 10
 
-# Attacker Training Phase
-attacker:
-  # Model
-  model_path: /mnt/local2/wxy/models/Qwen3-0.6B
+# Defaults shared by both training phases. A phase can override any value below.
+common: &common
+  # Model runtime
   model_dtype: bfloat16
   rollout_dtype: bfloat16
   attn_implementation: flash_attention_2
 
-  # Training
-  num_epochs: 1
-  train_batch_size: 16
-  ppo_mini_batch_size: 8
-  ppo_micro_batch_size_per_gpu: 2
+  # Optimization
   rollout_n: 8
   temperature: 1.0
   actor_lr: 1.0e-6
-  episodes_per_case: 100
 
   # Routing
   routing_policy: random_walk
   routing_attempts: 12
   routing_min_nodes: 1
   routing_max_steps: 4
+
+  # Rollout runtime
+  infer_backend: vllm
+  rollout_tp: 1
+  rollout_gpu_memory_utilization: 0.3
+
+  # Infrastructure and logging
+  reward_manager: naive
+  n_gpus_per_node: 1
+  nnodes: 1
+  project_name: cotrain_v2
+  trainer_logger: [console, wandb]
+  use_v1: true
+  save_freq: 100
+  test_freq: 500
+
+# Attacker Training Phase
+attacker:
+  <<: *common
+
+  # Model
+  model_path: /mnt/local2/wxy/models/Qwen3-0.6B
+
+  # Training
+  num_epochs: 1
+  train_batch_size: 16
+  ppo_mini_batch_size: 8
+  ppo_micro_batch_size_per_gpu: 2
+  episodes_per_case: 100
 
   # Reward weights
   reward_weights:
@@ -42,42 +65,25 @@ attacker:
   use_hrpo: true
 
   # Rollout
-  infer_backend: vllm
-  rollout_tp: 1
-  rollout_gpu_memory_utilization: 0.3
   log_prob_micro_batch_size_per_gpu: 2
   max_prompt_length: 4096
   max_response_length: 512
 
   # Infrastructure
-  reward_manager: naive
   reward_num_workers: 4
-  n_gpus_per_node: 1
-  nnodes: 1
 
   # Logging
-  project_name: cotrain_v2
   experiment_name: attacker_training
-  trainer_logger: [console, wandb]
-  use_v1: true
-  save_freq: 100
-  test_freq: 500
 
 # Defender Training Phase
 defender:
-  # Model (same as current online_grpo.yaml)
-  model_dtype: bfloat16
-  rollout_dtype: bfloat16
-  attn_implementation: flash_attention_2
+  <<: *common
 
   # Training
   num_epochs: 10
   train_batch_size: 32
   ppo_mini_batch_size: 16
   ppo_micro_batch_size_per_gpu: 32
-  rollout_n: 8
-  temperature: 1.0
-  actor_lr: 1.0e-6
   log_prob_micro_batch_size_per_gpu: 32
 
   # Environment
@@ -133,10 +139,6 @@ defender:
       critical_coverage_gain: 1.0
 
   # Attack generation (will use trained attacker in future)
-  routing_policy: random_walk
-  routing_max_steps: 4
-  routing_min_nodes: 1
-  routing_attempts: 12
   routing_seed_offset: 10000
   max_attack_attempts: 20
   attacker_llm: /mnt/local2/wxy/models/Qwen3-0.6B
@@ -144,29 +146,18 @@ defender:
   attacker_api_key: ""
 
   # Rollout
-  infer_backend: vllm
-  rollout_tp: 1
-  rollout_gpu_memory_utilization: 0.3
   max_prompt_length: 8192
   max_response_length: 4096
 
   # Infrastructure
-  reward_manager: naive
   reward_num_workers: 8
-  n_gpus_per_node: 1
-  nnodes: 1
 
   # Logging
   log_interval: 10
-  save_freq: 100
-  test_freq: 500
   memory_checkpoint_interval: 100
   memory_save_interval: 20
   memory_trajectory_enabled: false  # Disable for faster training
-  project_name: cotrain_v2
   experiment_name: defender_training
-  trainer_logger: [console, wandb]
-  use_v1: true
 
 # Evaluation
 evaluation:
