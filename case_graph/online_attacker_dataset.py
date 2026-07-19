@@ -24,17 +24,23 @@ class OnlineAttackerDataset(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        graph_files: List[str],
-        defender_memory_dir: Optional[str],
-        config: Dict[str, Any],
+        graph_files: Optional[List[str]] = None,
+        defender_memory_dir: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+        # verl standard arguments (ignored, but accepted for compatibility)
+        data_files: Optional[List[str]] = None,
+        tokenizer: Optional[Any] = None,
+        processor: Optional[Any] = None,
+        max_samples: int = -1,
+        **kwargs
     ):
-        self.config = config
-        self.episodes_per_case = config.get("episodes_per_case", 100)
-        self.routing_policy = config.get("routing_policy", "random_walk")
-        self.routing_attempts = config.get("routing_attempts", 12)
+        self.config = config or {}
+        self.episodes_per_case = self.config.get("episodes_per_case", 100)
+        self.routing_policy = self.config.get("routing_policy", "random_walk")
+        self.routing_attempts = self.config.get("routing_attempts", 12)
 
         # Load case graphs
-        self.graphs = self._load_graphs(graph_files)
+        self.graphs = self._load_graphs(graph_files or [])
         logger.info(f"Loaded {len(self.graphs)} case graphs for attacker training")
 
         # Load defender memory states (frozen from previous round)
