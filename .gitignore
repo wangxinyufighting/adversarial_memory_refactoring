@@ -1,4 +1,8 @@
 tests/
+parse_comparison.py
+*.md
+CLAUDE.md
+*/__pycache__/
 ./ONLINE_GRPO_README.md
 ./ONLINE_GRPO_OPTIMIZATION_REPORT.md
 ./ADVERSARIAL_COTRAIN_README.md
