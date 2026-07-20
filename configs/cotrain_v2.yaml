@@ -128,7 +128,7 @@ defender:
     retrieval_mode: flatten
     max_length: 256
     fields: [facts, summary, keywords, content]
-    device: gpu
+    device: cpu  # Reward workers are CPU actors; "gpu" is not a valid PyTorch device.
     require_model: true
 
   # Reward config
