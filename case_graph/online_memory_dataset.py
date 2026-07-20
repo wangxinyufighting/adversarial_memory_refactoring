@@ -22,7 +22,7 @@ from .baseline import AnswerEquivalenceJudge
 from .coverage import CaseCoverageTracker, CoverageAwareRouteScheduler
 from .defense import RetrievedMemoryAnswerAgent, SuccessPool
 from .grpo_adapter import build_verl_row_online, compute_score
-from .llm import OpenAIChatClient
+from .llm import LLMRequestError, OpenAIChatClient
 from .pipeline import AlgorithmConfig, prepare_refactor_state
 from .refactoring import HighPriorityBuffer, RefactorProposal, build_sandbox_memory
 from .retriever import MemoryChunk, MemoryStore, retriever_config_from_mapping
@@ -163,6 +163,10 @@ class OnlineMemoryEnvironment:
                 "route_evidence": attack.route,
             }
 
+        except LLMRequestError:
+            # Endpoint failures affect every case; retrying the full graph set
+            # only delays the same fatal error by thousands of requests.
+            raise
         except Exception as e:
             logger.warning(f"Attack generation failed for case {case_id} episode {episode}: {e}")
             return None

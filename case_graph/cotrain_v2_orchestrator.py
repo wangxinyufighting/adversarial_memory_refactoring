@@ -2,10 +2,10 @@
 
 import json
 import logging
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .attacker_server_manager import AttackerServerHandle, AttackerServerManager
 from .online_attacker_trainer import OnlineAttackerTrainer
 from .online_memory_trainer import OnlineMemoryTrainer
 
@@ -38,6 +38,11 @@ class CoTrainV2Orchestrator:
         # Training state
         self.current_round = 0
         self.eval_history = []
+        self.attacker_server_handle: Optional[AttackerServerHandle] = None
+        self.attacker_server = AttackerServerManager(
+            self._attacker_server_config(),
+            self.output_dir,
+        )
 
         logger.info("=" * 70)
         logger.info("Co-Training V2 Orchestrator Initialized")
@@ -54,42 +59,70 @@ class CoTrainV2Orchestrator:
 
         logger.info(f"\nStarting {num_rounds} co-training rounds")
 
-        for round_num in range(num_rounds):
-            self.current_round = round_num
-            logger.info("\n" + "=" * 70)
-            logger.info(f"Co-Training Round {round_num + 1}/{num_rounds}")
-            logger.info("=" * 70)
+        try:
+            for round_num in range(num_rounds):
+                self.current_round = round_num
+                logger.info("\n" + "=" * 70)
+                logger.info(f"Co-Training Round {round_num + 1}/{num_rounds}")
+                logger.info("=" * 70)
 
-            # Phase 1: Train Attacker
-            logger.info(f"\n[Phase 1/3] Training Attacker...")
-            attacker_output = self.output_dir / f"attacker_round_{round_num + 1}"
-            self._train_attacker(attacker_output)
+                # The attacker server must not occupy a training GPU here.
+                self.attacker_server.stop()
 
-            # Update attacker checkpoint
-            self.attacker_checkpoint = self._get_latest_checkpoint(attacker_output)
-            logger.info(f"Attacker checkpoint: {self.attacker_checkpoint}")
+                # Phase 1: Train Attacker
+                logger.info("\n[Phase 1/3] Training Attacker...")
+                attacker_output = self.output_dir / f"attacker_round_{round_num + 1}"
+                self._train_attacker(attacker_output)
 
-            # Phase 2: Train Defender
-            logger.info(f"\n[Phase 2/3] Training Defender...")
-            defender_output = self.output_dir / f"defender_round_{round_num + 1}"
-            self._train_defender(defender_output)
+                # Update and serve the trained attacker for defender data generation.
+                latest_attacker_checkpoint = self._get_latest_checkpoint(
+                    attacker_output
+                )
+                if latest_attacker_checkpoint is not None:
+                    self.attacker_checkpoint = latest_attacker_checkpoint
+                logger.info(f"Attacker checkpoint: {self.attacker_checkpoint}")
+                self.attacker_server_handle = self.attacker_server.serve(
+                    self.attacker_checkpoint,
+                    round_index=round_num,
+                )
+                self.attacker_checkpoint = self.attacker_server_handle.served_model_path
 
-            # Update defender checkpoint
-            self.defender_checkpoint = self._get_latest_checkpoint(defender_output)
-            logger.info(f"Defender checkpoint: {self.defender_checkpoint}")
+                # Phase 2: Train Defender
+                logger.info("\n[Phase 2/3] Training Defender...")
+                defender_output = self.output_dir / f"defender_round_{round_num + 1}"
+                self._train_defender(
+                    defender_output,
+                    self.attacker_server_handle,
+                )
+                self.attacker_server.stop()
 
-            # Phase 3: Evaluation
-            logger.info(f"\n[Phase 3/3] Evaluation...")
-            eval_results = self._evaluate_round(round_num + 1)
-            self.eval_history.append(eval_results)
+                # Update defender checkpoint
+                latest_defender_checkpoint = self._get_latest_checkpoint(
+                    defender_output
+                )
+                if latest_defender_checkpoint is not None:
+                    exported_defender, _ = self.attacker_server.export_model(
+                        latest_defender_checkpoint,
+                        round_index=round_num,
+                        export_name="defender",
+                    )
+                    self.defender_checkpoint = str(exported_defender)
+                logger.info(f"Defender checkpoint: {self.defender_checkpoint}")
 
-            # Save round manifest
-            self._save_round_manifest(round_num + 1, eval_results)
+                # Phase 3: Evaluation
+                logger.info("\n[Phase 3/3] Evaluation...")
+                eval_results = self._evaluate_round(round_num + 1)
+                self.eval_history.append(eval_results)
 
-            # Check convergence
-            if self._check_convergence(eval_results):
-                logger.info(f"\nConverged at round {round_num + 1}!")
-                break
+                # Save round manifest
+                self._save_round_manifest(round_num + 1, eval_results)
+
+                # Check convergence
+                if self._check_convergence(eval_results):
+                    logger.info(f"\nConverged at round {round_num + 1}!")
+                    break
+        finally:
+            self.attacker_server.stop()
 
         logger.info("\n" + "=" * 70)
         logger.info("Co-Training Complete!")
@@ -105,7 +138,9 @@ class CoTrainV2Orchestrator:
             defender_memory_dir = None  # No memory for first round
         else:
             prev_defender_dir = self.output_dir / f"defender_round_{self.current_round}"
-            defender_memory_dir = str(prev_defender_dir / "checkpoint_final" / "memory_states")
+            defender_memory_dir = str(
+                prev_defender_dir / "checkpoint_final" / "memory_states"
+            )
 
         attacker_config = self.config.get("attacker", {})
 
@@ -119,20 +154,24 @@ class CoTrainV2Orchestrator:
 
         trainer.train()
 
-    def _train_defender(self, output_dir: Path):
+    def _train_defender(
+        self,
+        output_dir: Path,
+        attacker_server: AttackerServerHandle,
+    ):
         """Train defender with updated attacker."""
         # Load memory states from previous round
         if self.current_round == 0:
             initial_memory_dir = None
         else:
             prev_defender_dir = self.output_dir / f"defender_round_{self.current_round}"
-            initial_memory_dir = str(prev_defender_dir / "checkpoint_final" / "memory_states")
+            initial_memory_dir = str(
+                prev_defender_dir / "checkpoint_final" / "memory_states"
+            )
 
-        defender_config = self.config.get("defender", {})
-
-        # Configure defender to use trained attacker
-        # In full implementation, would deploy attacker as vLLM server
-        # For now, defender uses its own question generation
+        defender_config = dict(self.config.get("defender", {}))
+        defender_config["attacker_llm"] = attacker_server.served_model_name
+        defender_config["attacker_api_base"] = attacker_server.api_base
 
         trainer = OnlineMemoryTrainer(
             config=defender_config,
@@ -144,6 +183,28 @@ class CoTrainV2Orchestrator:
         )
 
         trainer.train()
+
+    def _attacker_server_config(self) -> Dict[str, Any]:
+        """Combine phase settings needed to manage the attacker endpoint."""
+        attacker_config = dict(self.config.get("attacker", {}))
+        defender_config = dict(self.config.get("defender", {}))
+        server_config = dict(self.config.get("attacker_server", {}) or {})
+        training_gpus = max(
+            int(attacker_config.get("n_gpus_per_node", 1)),
+            int(defender_config.get("n_gpus_per_node", 1)),
+        )
+        manager_config = {**attacker_config, **defender_config}
+        manager_config.update(
+            {
+                "attacker_server": server_config,
+                "training_n_gpus_per_node": training_gpus,
+            }
+        )
+        if "manage_attacker_server" in self.config:
+            manager_config["manage_attacker_server"] = self.config[
+                "manage_attacker_server"
+            ]
+        return manager_config
 
     def _evaluate_round(self, round_num: int) -> Dict[str, Any]:
         """Evaluate both models on validation set."""
@@ -179,7 +240,9 @@ class CoTrainV2Orchestrator:
         # - Memory compression target
         # - Stability across recent rounds
 
-        target_accuracy = self.config.get("evaluation", {}).get("target_accuracy_threshold", 0.85)
+        target_accuracy = self.config.get("evaluation", {}).get(
+            "target_accuracy_threshold", 0.85
+        )
         current_accuracy = results["defender"]["accuracy"]
 
         return current_accuracy >= target_accuracy
@@ -190,6 +253,7 @@ class CoTrainV2Orchestrator:
             "round": round_num,
             "attacker_checkpoint": str(self.attacker_checkpoint),
             "defender_checkpoint": str(self.defender_checkpoint),
+            "attacker_server": self._attacker_server_manifest(),
             "evaluation": eval_results,
         }
 
@@ -198,6 +262,20 @@ class CoTrainV2Orchestrator:
             json.dump(manifest, f, indent=2)
 
         logger.info(f"Saved round manifest: {manifest_path}")
+
+    def _attacker_server_manifest(self) -> Optional[Dict[str, Any]]:
+        handle = self.attacker_server_handle
+        if handle is None:
+            return None
+        return {
+            "source_model_path": handle.source_model_path,
+            "served_model_path": handle.served_model_path,
+            "served_model_name": handle.served_model_name,
+            "api_base": handle.api_base,
+            "pid": handle.pid,
+            "log_path": handle.log_path,
+            "merged": handle.merged,
+        }
 
     def _save_final_results(self):
         """Save final training results."""
@@ -214,22 +292,26 @@ class CoTrainV2Orchestrator:
 
         logger.info(f"Saved final results: {results_path}")
 
-    def _get_latest_checkpoint(self, output_dir: Path) -> str:
+    def _get_latest_checkpoint(self, output_dir: Path) -> Optional[str]:
         """Get latest checkpoint from training output."""
         checkpoint_dir = output_dir / "verl_checkpoints"
 
         if not checkpoint_dir.exists():
             logger.warning(f"No checkpoints found in {checkpoint_dir}")
-            return str(output_dir)
+            return None
 
         # Find latest global_step directory
         step_dirs = sorted(
             checkpoint_dir.glob("global_step_*"),
-            key=lambda p: int(p.name.split("_")[-1])
+            key=lambda p: int(p.name.split("_")[-1]),
         )
 
         if not step_dirs:
-            return str(output_dir)
+            logger.warning(f"No global-step checkpoints found in {checkpoint_dir}")
+            return None
 
         latest = step_dirs[-1] / "actor"
-        return str(latest) if latest.exists() else str(output_dir)
+        if not latest.exists():
+            logger.warning(f"Actor checkpoint not found in {step_dirs[-1]}")
+            return None
+        return str(latest)

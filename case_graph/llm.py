@@ -16,6 +16,10 @@ from .prompts import (
 )
 
 
+class LLMRequestError(RuntimeError):
+    """An LLM endpoint rejected a request or remained unreachable."""
+
+
 def _strip_code_fence(text: str) -> str:
     text = text.strip()
     match = re.match(r"^```(?:json)?\s*(.*?)\s*```$", text, flags=re.DOTALL)
@@ -200,7 +204,9 @@ class OpenAIChatClient:
                         time.sleep(wait_time)
                         continue
                 # Don't retry on 4xx errors (client errors)
-                raise RuntimeError(f"LLM API request failed with HTTP {exc.code}: {body}") from exc
+                raise LLMRequestError(
+                    f"LLM API request failed with HTTP {exc.code}: {body}"
+                ) from exc
             except urllib.error.URLError as exc:
                 # Network errors (DNS, connection refused, etc.)
                 last_error = exc
@@ -208,16 +214,25 @@ class OpenAIChatClient:
                     wait_time = 2 ** attempt
                     time.sleep(wait_time)
                     continue
-                raise RuntimeError(f"LLM API request failed with network error: {exc.reason}") from exc
+                raise LLMRequestError(
+                    f"LLM API request failed with network error: {exc.reason}"
+                ) from exc
 
         # If all retries failed
         if last_error:
             if isinstance(last_error, urllib.error.HTTPError):
                 body = last_error.read().decode("utf-8", errors="replace")
-                raise RuntimeError(f"LLM API request failed after {max_retries} retries with HTTP {last_error.code}: {body}") from last_error
+                raise LLMRequestError(
+                    "LLM API request failed after "
+                    f"{max_retries} retries with HTTP {last_error.code}: {body}"
+                ) from last_error
             else:
-                raise RuntimeError(f"LLM API request failed after {max_retries} retries: {last_error}") from last_error
-        raise RuntimeError(f"LLM API request failed after {max_retries} retries")
+                raise LLMRequestError(
+                    f"LLM API request failed after {max_retries} retries: {last_error}"
+                ) from last_error
+        raise LLMRequestError(
+            f"LLM API request failed after {max_retries} retries"
+        )
 
     def complete_json(
         self,
