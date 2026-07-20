@@ -31,6 +31,7 @@ args=(
 )
 
 [[ -n "${VAL_GRAPHS_DIR:-}" ]] && args+=(--val-graphs "${VAL_GRAPHS_DIR}")
+[[ -n "${CONFIG_SECTION:-}" ]] && args+=(--config-section "${CONFIG_SECTION}")
 
 [[ -n "${ROLLOUT_N:-}" ]] && args+=(--rollout-n "${ROLLOUT_N}")
 [[ -n "${TRAIN_BATCH_SIZE:-}" ]] && args+=(--train-batch-size "${TRAIN_BATCH_SIZE}")

@@ -1,11 +1,10 @@
 """CLI entry point for online GRPO memory refactoring training."""
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import yaml
 
@@ -38,11 +37,36 @@ def list_graph_files(graphs_dir: str) -> List[str]:
     return [str(f) for f in graph_files]
 
 
-def load_config(config_path: str) -> dict:
-    """Load YAML configuration file."""
+def load_config(config_path: str, section: Optional[str] = None) -> dict:
+    """Load a flat config or one phase from a co-training config."""
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
-    return normalize_verl_config(config or {})
+    config = config or {}
+
+    selected_section = section
+    if selected_section is None and "cotrain_rounds" in config:
+        defender_config = config.get("defender")
+        if isinstance(defender_config, dict):
+            selected_section = "defender"
+
+    if selected_section is not None:
+        section_config = config.get(selected_section)
+        if not isinstance(section_config, dict):
+            available_sections = sorted(
+                key for key, value in config.items() if isinstance(value, dict)
+            )
+            raise ValueError(
+                f"Config section {selected_section!r} was not found in {config_path}; "
+                f"available sections: {available_sections}"
+            )
+        logger.info(
+            "Using config section %s from %s",
+            selected_section,
+            config_path,
+        )
+        config = dict(section_config)
+
+    return normalize_verl_config(config)
 
 
 def normalize_verl_config(config: dict) -> dict:
@@ -377,6 +401,14 @@ def main():
         help="Path to YAML config file"
     )
     parser.add_argument(
+        "--config-section",
+        help=(
+            "Top-level YAML section to use, such as defender in "
+            "configs/cotrain_v2.yaml. Co-training configs select defender "
+            "automatically."
+        ),
+    )
+    parser.add_argument(
         "--initial-memory-dir",
         default=None,
         help="Directory with initial memory states (optional)"
@@ -465,7 +497,7 @@ def main():
     args = parser.parse_args()
 
     # Load and merge config
-    base_config = load_config(args.config)
+    base_config = load_config(args.config, section=args.config_section)
     config = merge_config(base_config, args)
 
     # List graph files

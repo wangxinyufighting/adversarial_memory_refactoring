@@ -11,7 +11,7 @@ Arguments:
   OUTPUT_PATH  Hugging Face output directory. Defaults to ACTOR_PATH_hf.
 
 Environment:
-  PYTHON_BIN                 Python executable. Defaults to python3.
+  PYTHON_BIN                 Python executable. Defaults to the active environment's python.
   TRUST_REMOTE_CODE=1        Pass --trust-remote-code to the merger.
   USE_CPU_INITIALIZATION=0   Disable CPU model initialization during merge.
 EOF
@@ -30,7 +30,28 @@ fi
 ACTOR_PATH="${1%/}"
 OUTPUT_PATH="${2:-${ACTOR_PATH}_hf}"
 OUTPUT_PATH="${OUTPUT_PATH%/}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+
+if [[ -n "${PYTHON_BIN:-}" ]]; then
+  :
+elif [[ -n "${CONDA_PREFIX:-}" && -x "${CONDA_PREFIX}/bin/python" ]]; then
+  PYTHON_BIN="${CONDA_PREFIX}/bin/python"
+elif [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+  PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="$(command -v python)"
+else
+  PYTHON_BIN="$(command -v python3)"
+fi
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="${ROOT_DIR}/compat:${ROOT_DIR}:${ROOT_DIR}/verl:${PYTHONPATH:-}"
+
+if ! "$PYTHON_BIN" -c 'import accelerate, ray, torch, transformers' >/dev/null; then
+  echo "The selected Python cannot import the verl runtime dependencies." >&2
+  echo "Selected interpreter: $PYTHON_BIN" >&2
+  echo "Set PYTHON_BIN to the training environment's Python executable." >&2
+  exit 1
+fi
 
 if [[ ! -d "$ACTOR_PATH" ]]; then
   echo "Actor checkpoint directory not found: $ACTOR_PATH" >&2
@@ -124,9 +145,6 @@ print(world_size)
 PY
 )"
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PYTHONPATH="${ROOT_DIR}/compat:${ROOT_DIR}:${ROOT_DIR}/verl:${PYTHONPATH:-}"
-
 MERGE_ARGS=(
   -m verl.model_merger merge
   --backend fsdp
@@ -143,6 +161,7 @@ if [[ "${TRUST_REMOTE_CODE:-0}" == "1" ]]; then
 fi
 
 echo "Merging FSDP actor checkpoint"
+echo "  Python:     $PYTHON_BIN"
 echo "  Source:     $ACTOR_PATH"
 echo "  World size: $WORLD_SIZE"
 echo "  Output:     $OUTPUT_PATH"
