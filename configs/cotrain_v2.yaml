@@ -1,6 +1,6 @@
 # Co-Training V2 Configuration
 
-cotrain_rounds: 40
+cotrain_rounds: 10
 
 # Serve each newly trained attacker while the defender generates online attacks.
 # Set ATTACKER_SERVER_CUDA_VISIBLE_DEVICES to override automatic spare-GPU selection.
@@ -12,7 +12,7 @@ attacker_server:
   served_model_name: attacker-current
   cuda_visible_devices: auto
   tensor_parallel_size: 1
-  gpu_memory_utilization: 0.25
+  gpu_memory_utilization: 0.4
   max_model_len: 8192
   checkpoint_backend: fsdp
   merge_checkpoints: true
@@ -41,11 +41,11 @@ common: &common
   # Rollout runtime
   infer_backend: vllm
   rollout_tp: 1
-  rollout_gpu_memory_utilization: 0.6
+  rollout_gpu_memory_utilization: 0.8
 
   # Infrastructure and logging
   reward_manager: naive
-  n_gpus_per_node: 1
+  n_gpus_per_node: 3
   nnodes: 1
   project_name: cotrain_v2
   trainer_logger: [console, wandb]
@@ -65,7 +65,7 @@ attacker:
   train_batch_size: 128
   ppo_mini_batch_size: 64
   ppo_micro_batch_size_per_gpu: 32
-  episodes_per_case: 200
+  episodes_per_case: 100
 
   # Reward weights
   reward_weights:
@@ -83,7 +83,7 @@ attacker:
   use_hrpo: true
 
   # Rollout
-  log_prob_micro_batch_size_per_gpu: 128
+  log_prob_micro_batch_size_per_gpu: 64
   max_prompt_length: 8192
   max_response_length: 512
 
@@ -102,7 +102,7 @@ defender:
   train_batch_size: 128
   ppo_mini_batch_size: 64
   ppo_micro_batch_size_per_gpu: 32
-  log_prob_micro_batch_size_per_gpu: 128
+  log_prob_micro_batch_size_per_gpu: 64
 
   # Environment
   max_questions_per_case: 200
