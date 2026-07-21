@@ -339,7 +339,13 @@ def _load_training_config(path: str) -> dict:
         logger.warning("Training config %s not found; using Evaluation defaults.", path)
         return {}
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    return dict(payload) if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        return {}
+    defender_config = payload.get("defender")
+    if "cotrain_rounds" in payload and isinstance(defender_config, dict):
+        logger.info("Using defender section from co-training config %s", path)
+        payload = defender_config
+    return dict(payload)
 
 
 def _setting(cli_value, training_config: dict, key: str, default):
@@ -369,7 +375,10 @@ def _build_attacker(args: argparse.Namespace):
             "when no attacker server is needed."
         )
 
-    logger.info("Using LLM attacker for training-consistent construction probes.")
+    logger.warning(
+        "ATTACKER_MODE=llm uses a fixed question budget and does not certify graph coverage. "
+        "Use ATTACKER_MODE=coverage for formal evaluation memory construction."
+    )
     return FrozenLLMAttacker(
         client=client,
         max_output_tokens=args.attacker_max_output_tokens,

@@ -1272,9 +1272,13 @@ def _policy_chunks_from_response(
 
 
 def _best_chunk_content(chunk: MemoryChunk, state: Dict[str, Any]) -> str:
-    candidates: List[tuple[str, str]] = [("content", chunk.content)]
     metadata = chunk.metadata or {}
     summary = metadata.get("summary")
+    candidates: List[tuple[str, str]] = []
+    if _looks_like_raw_dialogue(chunk.content):
+        candidates.extend(("excerpt", text) for text in _dialogue_excerpts(chunk.content))
+    else:
+        candidates.append(("content", chunk.content))
     if summary:
         candidates.append(("summary", str(summary)))
     facts = metadata.get("facts")
@@ -1325,6 +1329,35 @@ def _best_chunk_content(chunk: MemoryChunk, state: Dict[str, Any]) -> str:
         return value, -len(text)
 
     return max(candidates, key=score)[1]
+
+
+def _looks_like_raw_dialogue(text: str) -> bool:
+    """Detect long conversational transcripts that must not become memory chunks."""
+
+    normalized = " ".join(str(text).split())
+    if len(normalized) < 500:
+        return False
+    conversational_markers = re.findall(
+        r"\b(?:i'm|i've|i'll|can you|could you|do you|did you|by the way|thanks)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    return normalized.count("?") >= 3 or len(conversational_markers) >= 5
+
+
+def _dialogue_excerpts(text: str, max_sentences: int = 3, max_chars: int = 700) -> List[str]:
+    """Build short contiguous candidates instead of persisting a full transcript."""
+
+    normalized = " ".join(str(text).split())
+    sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+", normalized) if item.strip()]
+    excerpts: List[str] = []
+    for start in range(len(sentences)):
+        for size in range(1, max_sentences + 1):
+            excerpt = " ".join(sentences[start : start + size])
+            if not excerpt or len(excerpt) > max_chars:
+                break
+            excerpts.append(excerpt)
+    return excerpts
 
 
 def _sanitize_policy_metadata(metadata: Dict[str, Any], content: str) -> Dict[str, Any]:
