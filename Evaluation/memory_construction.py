@@ -42,7 +42,7 @@ from case_graph.refactoring import (
     compute_reward,
     settle_grpo_rollouts,
 )
-from case_graph.retriever import MemoryChunk, MemoryStore
+from case_graph.retriever import MemoryChunk, MemoryStore, build_memory_retriever
 from case_graph.routing import (
     GraphRoute,
     RandomWalkRoutingPolicy,
@@ -81,6 +81,10 @@ class MemoryConstructionConfig:
     critical_coverage_threshold: float = 1.0
     certification_questions: int = 60
     adaptive_stopping: bool = True
+    qa_early_stopping: bool = False
+    qa_stop_question_count: int = 50
+    qa_stop_accuracy: float = 0.9
+    qa_stop_check_interval: int = 20
     proposal_count: int = 1
     commit_threshold: float = 0.0
     seed: int = 42
@@ -472,6 +476,107 @@ class CoverageGraphAttacker:
         )
 
 
+def _build_qa_stop_questions(
+    graph: Dict[str, Any],
+    config: MemoryConstructionConfig,
+) -> List[Dict[str, Any]]:
+    """Create a fixed QA bank from the original case and graph evidence."""
+
+    requested = max(0, int(config.qa_stop_question_count))
+    if not config.qa_early_stopping or requested == 0:
+        return []
+    questions: List[Dict[str, Any]] = []
+    seen = set()
+    target = graph.get("target") or {}
+    if isinstance(target, dict):
+        target_question = str(
+            target.get("question") or graph.get("question") or ""
+        ).strip()
+        target_answer_value = (
+            target.get("answer") if "answer" in target else graph.get("answer", "")
+        )
+        target_answer = str(target_answer_value).strip()
+        if target_question and target_answer:
+            questions.append({"question": target_question, "answer": target_answer})
+            seen.add((target_question.casefold(), target_answer.casefold()))
+    if len(questions) >= requested:
+        return questions
+    tracker = CaseCoverageTracker.from_graph(graph)
+    generator = CoverageGraphAttacker(compositional_probes=config.compositional_probes)
+    generator.prepare(graph, tracker)
+    for index in range(max(requested * 4, requested + 10)):
+        try:
+            attack = generator.generate(
+                graph,
+                route=None,
+                tracker=tracker,
+                max_retries_per_unit=1,
+                seed=config.seed + index,
+            )
+        except CoverageCandidatesExhausted:
+            break
+        payload = attack.to_dict()
+        route = payload.get("route", {}) or {}
+        unit_ids = [
+            str(item)
+            for item in route.get("coverage_unit_ids", [])
+            if str(item) in tracker.units
+        ] or tracker.unit_ids_for_route(route)
+        tracker.record(unit_ids, success=True)
+        key = (
+            str(payload.get("question", "")).casefold(),
+            str(payload.get("answer", "")).casefold(),
+        )
+        if key in seen or not all(key):
+            continue
+        seen.add(key)
+        questions.append(
+            {
+                "question": str(payload["question"]),
+                "answer": str(payload["answer"]),
+            }
+        )
+        if len(questions) >= requested:
+            break
+    return questions
+
+
+def _evaluate_qa_stop_questions(
+    memory_store: MemoryStore,
+    questions: List[Dict[str, Any]],
+    config: MemoryConstructionConfig,
+    answer_agent: RetrievedMemoryAnswerAgent,
+    judge: AnswerEquivalenceJudge,
+) -> Dict[str, Any]:
+    retriever = build_memory_retriever(config.retriever_config, memory_store)
+    correct = 0
+    errors = 0
+    for item in questions:
+        try:
+            hits = retriever.retrieve(
+                item["question"],
+                top_k=config.top_k,
+                min_score=config.min_score,
+            )
+            answer_result = answer_agent.answer(item["question"], hits)
+            judge_result = judge.judge(
+                question=item["question"],
+                gold_answer=item["answer"],
+                candidate_answer=str(answer_result.get("answer", "")),
+            )
+            correct += int(bool(judge_result.get("correct", False)))
+        except Exception:
+            errors += 1
+            logger.exception("QA early-stopping question failed.")
+    total = len(questions)
+    return {
+        "correct": correct,
+        "question_count": total,
+        "accuracy": correct / total if total else 0.0,
+        "errors": errors,
+    }
+
+
 class EvaluationMemoryConstructor:
     """Build memories for held-out cases without using target metadata."""
 
@@ -510,6 +615,60 @@ class EvaluationMemoryConstructor:
         coverage_tracker = CaseCoverageTracker.from_graph(safe_graph)
         if isinstance(self.attacker, CoverageGraphAttacker):
             self.attacker.prepare(safe_graph, coverage_tracker)
+        qa_stop_questions = _build_qa_stop_questions(graph, self.config)
+        qa_stop_state = {
+            "enabled": bool(self.config.qa_early_stopping),
+            "requested_question_count": max(0, int(self.config.qa_stop_question_count)),
+            "question_count": len(qa_stop_questions),
+            "target_accuracy": min(1.0, max(0.0, float(self.config.qa_stop_accuracy))),
+            "correct": 0,
+            "accuracy": 0.0,
+            "errors": 0,
+            "checks": 0,
+            "last_checked_after_questions": -1,
+        }
+        if qa_stop_questions:
+            logger.info(
+                "Case %s QA early stopping enabled: questions=%d target_accuracy=%.3f",
+                case_id,
+                len(qa_stop_questions),
+                qa_stop_state["target_accuracy"],
+            )
+        elif self.config.qa_early_stopping:
+            logger.warning("Case %s has no valid QA early-stopping questions.", case_id)
+
+        def qa_stop_reached(completed_questions: int, force: bool = False) -> bool:
+            if not qa_stop_questions:
+                return False
+            minimum = max(0, int(self.config.min_questions_per_case))
+            interval = max(1, int(self.config.qa_stop_check_interval))
+            if completed_questions < minimum:
+                return False
+            if not force and completed_questions % interval:
+                return False
+            if qa_stop_state["last_checked_after_questions"] == completed_questions:
+                return qa_stop_state["accuracy"] >= qa_stop_state["target_accuracy"]
+            metrics = _evaluate_qa_stop_questions(
+                memory_store,
+                qa_stop_questions,
+                self.config,
+                self.answer_agent,
+                self.judge,
+            )
+            qa_stop_state.update(metrics)
+            qa_stop_state["checks"] += 1
+            qa_stop_state["last_checked_after_questions"] = completed_questions
+            logger.info(
+                "Case %s QA early-stop check after %d questions: %d/%d (%.3f), target=%.3f",
+                case_id,
+                completed_questions,
+                metrics["correct"],
+                metrics["question_count"],
+                metrics["accuracy"],
+                qa_stop_state["target_accuracy"],
+            )
+            return metrics["accuracy"] >= qa_stop_state["target_accuracy"]
+
         route_scheduler = CoverageAwareRouteScheduler(
             routing_policy,
             candidate_attempts=max(8, self.config.routing_attempts * 2),
@@ -538,6 +697,10 @@ class EvaluationMemoryConstructor:
         )
 
         for episode in range(question_budget):
+            if qa_stop_reached(episode):
+                completion_status = "done"
+                stop_reason = "qa_accuracy_reached"
+                break
             seed = self.config.seed + episode * 1009
             route_payload: Dict[str, Any] = {}
             should_log = _should_log_progress(
@@ -853,6 +1016,10 @@ class EvaluationMemoryConstructor:
                 )
                 break
 
+        if completion_status != "done" and qa_stop_reached(len(traces), force=True):
+            completion_status = "done"
+            stop_reason = "qa_accuracy_reached"
+
         if completion_status != "done" and stop_reason == "question_budget_exhausted":
             if coverage_tracker.is_coverage_ready(
                 self.config.coverage_threshold,
@@ -861,6 +1028,9 @@ class EvaluationMemoryConstructor:
                 stop_reason = "certification_budget_exhausted"
 
         _finalize_evaluation_memory(memory_store)
+        coverage_state = coverage_tracker.snapshot()
+        if self.config.qa_early_stopping:
+            coverage_state["qa_early_stopping"] = dict(qa_stop_state)
 
         return CaseConstructionResult(
             case_id=case_id,
@@ -868,7 +1038,7 @@ class EvaluationMemoryConstructor:
             success_pool=success_pool,
             high_priority_buffer=high_priority_buffer,
             traces=traces,
-            coverage_state=coverage_tracker.snapshot(),
+            coverage_state=coverage_state,
             completion_status=completion_status,
             stop_reason=stop_reason,
             question_budget=question_budget,
@@ -1067,6 +1237,7 @@ def summarize_case_traces(
         coverage_state
         or (traces[-1].coverage if traces else {})
     )
+    qa_stop = dict(final_coverage.get("qa_early_stopping", {}) or {})
     return {
         "case_id": case_id or (traces[0].case_id if traces else ""),
         "episodes": len(traces),
@@ -1090,6 +1261,11 @@ def summarize_case_traces(
             final_coverage.get("consecutive_certification_passes", 0)
         ),
         "certification_resets": int(final_coverage.get("certification_resets", 0)),
+        "qa_stop_enabled": bool(qa_stop.get("enabled", False)),
+        "qa_stop_accuracy": float(qa_stop.get("accuracy", 0.0)),
+        "qa_stop_correct": int(qa_stop.get("correct", 0)),
+        "qa_stop_question_count": int(qa_stop.get("question_count", 0)),
+        "qa_stop_checks": int(qa_stop.get("checks", 0)),
         "attack_failure_errors": _top_errors(
             trace.error for trace in traces if trace.status == "attack_generation_failed"
         ),

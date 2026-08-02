@@ -102,6 +102,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--certification-questions", type=int, default=60)
     parser.add_argument("--disable-adaptive-stopping", action="store_true")
     parser.add_argument(
+        "--qa-early-stopping",
+        action="store_true",
+        help="Stop a case when memory QA accuracy reaches the configured threshold.",
+    )
+    parser.add_argument("--qa-stop-question-count", type=int, default=50)
+    parser.add_argument("--qa-stop-accuracy", type=float, default=0.9)
+    parser.add_argument("--qa-stop-check-interval", type=int, default=20)
+    parser.add_argument(
         "--force-add",
         action="store_true",
         help="Debug-only: disable Merge during construction",
@@ -141,6 +149,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     args = parse_args()
+    if not 0.0 <= args.qa_stop_accuracy <= 1.0:
+        raise SystemExit("--qa-stop-accuracy must be between 0 and 1.")
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -245,6 +255,10 @@ def main() -> None:
             critical_coverage_threshold=critical_coverage_threshold,
             certification_questions=args.certification_questions,
             adaptive_stopping=not args.disable_adaptive_stopping,
+            qa_early_stopping=args.qa_early_stopping,
+            qa_stop_question_count=max(0, args.qa_stop_question_count),
+            qa_stop_accuracy=args.qa_stop_accuracy,
+            qa_stop_check_interval=max(1, args.qa_stop_check_interval),
             proposal_count=args.proposal_count,
             commit_threshold=commit_threshold,
             seed=seed,
